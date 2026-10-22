@@ -22,6 +22,12 @@ async function miniatura(uri) {
   }
 }
 
+// "PLA 50 g" (um tipo) ou uma linha por tipo quando a peça usa mais de um
+const filamentoHtml = (it) => {
+  const fil = it.fil && it.fil.length ? it.fil : [{ nome: '', g: it.g }];
+  return fil.map((f) => `${f.nome ? `<span class="tipo">${esc(f.nome)}</span> ` : ''}${gramasTexto(f.g)}`).join('<br/>');
+};
+
 export async function enviarOrcamentoPdf(orc, modoHora) {
   const fotos = await Promise.all(orc.itens.map((it) => miniatura(it.foto)));
   const linhas = orc.itens
@@ -30,7 +36,7 @@ export async function enviarOrcamentoPdf(orc, modoHora) {
       <tr>
         <td class="foto">${fotos[i] ? `<img src="${fotos[i]}"/>` : '<div class="semfoto"></div>'}</td>
         <td><div class="nome">${esc(it.nome)}</div></td>
-        <td class="num">${gramasTexto(it.g)}</td>
+        <td class="num">${filamentoHtml(it)}</td>
         <td class="num">${tempoTexto(it.min, modoHora)}</td>
         <td class="num valor">${reais(it.preco)}</td>
       </tr>`
@@ -46,12 +52,12 @@ export async function enviarOrcamentoPdf(orc, modoHora) {
   @page { margin: 0; }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: 'Barlow', Arial, sans-serif; color: #10202f; background: #fff; }
-  .topo { background: #070b12; color: #e8f0f8; padding: 28px 36px; display: flex; align-items: center; gap: 18px; }
-  .topo img { width: 64px; height: 68px; }
+  .topo { background: #fff; padding: 34px 36px 22px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #edf1f5; }
+  .topo img { width: 62px; height: auto; }
   .marca { font-family: 'Chakra Petch', Arial, sans-serif; font-weight: 700; font-size: 30px; letter-spacing: 1px; line-height: 1; }
-  .marca { background: linear-gradient(90deg, #3fd4e6, #f08a3c); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; display: inline-block; }
-  .slogan { color: #93a6bd; font-size: 13px; margin-top: 6px; letter-spacing: 2px; text-transform: uppercase; }
-  .faixa { height: 4px; background: linear-gradient(90deg, #3fd4e6, #f08a3c); }
+  .marca { background: linear-gradient(90deg, #3fd4e6, #f08a3c); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; -webkit-text-stroke: 0.7px rgba(7, 11, 18, 0.55); paint-order: stroke fill; display: inline-block; }
+  .slogan { color: #3b4b60; font-size: 13px; font-weight: 600; margin-top: 6px; letter-spacing: 2.5px; text-transform: uppercase; }
+  .tipo { color: #5b6d85; font-size: 12px; }
   .corpo { padding: 28px 36px 40px; }
   h1 { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 24px; margin: 0 0 4px; color: #070b12; }
   .info { color: #5b6d85; font-size: 14px; margin-bottom: 22px; }
@@ -66,16 +72,15 @@ export async function enviarOrcamentoPdf(orc, modoHora) {
   th.num { text-align: right; }
   .valor { font-weight: 700; }
   tr.taxa td { color: #5b6d85; }
-  .total { margin-top: 22px; background: #070b12; color: #e8f0f8; border-radius: 12px; padding: 18px 22px; display: flex; justify-content: space-between; align-items: center; }
-  .total .r { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: #93a6bd; }
-  .total .v { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 30px; font-weight: 700; color: #f08a3c; }
+  .total { margin-top: 18px; border-top: 2px solid #dfe7ef; padding: 16px 6px 0; display: flex; justify-content: space-between; align-items: center; }
+  .total .r { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: #5b6d85; font-weight: 600; }
+  .total .v { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 30px; font-weight: 700; color: #070b12; }
   .rodape { margin-top: 26px; color: #93a6bd; font-size: 12px; text-align: center; }
 </style></head><body>
   <div class="topo">
     <img src="data:image/png;base64,${LOGO64}"/>
     <div><div class="marca">MATERIALIZZA</div><div class="slogan">Layer by Layer</div></div>
   </div>
-  <div class="faixa"></div>
   <div class="corpo">
     <h1>Orçamento</h1>
     <div class="info">${orc.cliente ? `Cliente: <b>${esc(orc.cliente)}</b> &nbsp;·&nbsp; ` : ''}Data: <b>${dataTexto(orc.data)}</b></div>

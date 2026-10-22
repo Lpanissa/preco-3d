@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   AppState,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -60,15 +61,61 @@ const K_PECAS = 'preco3d-pecas';
 const K_ORCS = 'preco3d-orcamentos';
 const PASTA_FOTOS = FileSystem.documentDirectory + 'fotos/';
 
+// tipos de filamento, cada um com seu preço por grama (R$ 0,26 = '26')
+const FIL_PADRAO = [{ id: 'pla', nome: 'PLA', precoD: '26' }];
+
 const CONFIG_PADRAO = {
-  precoGrama: '26', // R$ 0,26
+  filamentos: FIL_PADRAO,
   precoHora: '400', // R$ 4,00
   taxaFixa: '', // R$ 0,00
   modoHora: 'normal', // 'normal' (2:30) ou 'fracionada' (2,50 h)
   senha: '',
 };
 
-const precoDe = (min, g, cfg) => g * valorDecimal(cfg.precoGrama) + (min / 60) * valorDecimal(cfg.precoHora);
+const tiposDe = (cfg) => (cfg.filamentos && cfg.filamentos.length ? cfg.filamentos : FIL_PADRAO);
+const tipoPorId = (cfg, id) => tiposDe(cfg).find((t) => t.id === id) || tiposDe(cfg)[0];
+const tipoPorNome = (cfg, nome) => {
+  const n = String(nome || '').trim().toLowerCase();
+  return (n && tiposDe(cfg).find((t) => t.nome.trim().toLowerCase() === n)) || tiposDe(cfg)[0];
+};
+const novoFil = (tipo, gD = '') => ({ id: novoId(), tipo, gD });
+// cada peça tem uma lista de filamentos (tipo + gramas)
+const filDoItem = (it) => (it.fil && it.fil.length ? it.fil : [{ id: 'f0', tipo: null, gD: it.gD || '' }]);
+const gramasDoItem = (it) => filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD), 0);
+const precoDoItem = (it, cfg) =>
+  filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD) * valorDecimal(tipoPorId(cfg, f.tipo).precoD), 0) +
+  (minutosDe(it.tD, cfg.modoHora) / 60) * valorDecimal(cfg.precoHora);
+// peça salva/orçamento -> filamentos editáveis de novo
+const filDeSnapshot = (p, cfg) =>
+  (p.fil && p.fil.length ? p.fil : [{ nome: '', g: p.g }]).map((f) => novoFil(tipoPorNome(cfg, f.nome).id, digitosDecimal(f.g)));
+const nomesDosTipos = (fil) => [...new Set((fil || []).map((f) => f.nome).filter(Boolean))].join(' + ');
+
+// quando o teclado abre, rola a tela para o campo não ficar escondido atrás dele
+function useRolarParaCampo(ativo) {
+  const ref = useRef(null);
+  const y = useRef(0);
+  useEffect(() => {
+    if (!ativo) return;
+    const sub = Keyboard.addListener('keyboardDidShow', (e) => {
+      const campo = TextInput.State.currentlyFocusedInput ? TextInput.State.currentlyFocusedInput() : null;
+      if (!campo || !ref.current) return;
+      setTimeout(() => {
+        try {
+          campo.measureInWindow((x, topo, w, h) => {
+            const limite = e.endCoordinates.screenY - 24;
+            const sobra = topo + h - limite;
+            if (sobra > 0 && ref.current) ref.current.scrollTo({ y: y.current + sobra, animated: true });
+          });
+        } catch (er) {}
+      }, 80);
+    });
+    return () => sub.remove();
+  }, [ativo]);
+  const onScroll = (ev) => {
+    y.current = ev.nativeEvent.contentOffset.y;
+  };
+  return { ref, onScroll };
+}
 
 // foto em tamanho bom e guardada no app (a do celular pode ser apagada depois)
 async function guardarFoto(uri) {
@@ -110,6 +157,10 @@ export default function App() {
   const [ajustes, setAjustes] = useState(false);
   const [cartao, setCartao] = useState(null); // peça a compartilhar como imagem
   const [salvarOrc, setSalvarOrc] = useState(false);
+  const [novoOrc, setNovoOrc] = useState(false);
+  const [alvoFoto, setAlvoFoto] = useState(null); // { tipo: 'item' | 'peca', id, modo: 'ver' | 'escolher' }
+  const [escolhaTipo, setEscolhaTipo] = useState(null); // { itemId, filId }
+  const limparDepoisDeSalvar = useRef(false);
   const [aviso, setAviso] = useState('');
   const [novaVersao, setNovaVersao] = useState(false);
   const [atualizando, setAtualizando] = useState('');
@@ -138,12 +189,18 @@ export default function App() {
             conf = { ...CONFIG_PADRAO, senha: v.senha || '', precoGrama: dig(v.precoGrama), precoHora: dig(v.precoHora), taxaFixa: dig(v.taxaFixa) };
           }
         }
+        // versões antigas tinham um preço por grama só: vira o preço do PLA
+        if (!conf.filamentos || !conf.filamentos.length || conf.precoGrama) {
+          conf = { ...conf, filamentos: conf.filamentos && conf.filamentos.length && !conf.precoGrama ? conf.filamentos : [{ ...FIL_PADRAO[0], precoD: conf.precoGrama || '26' }] };
+          delete conf.precoGrama;
+        }
         setCfg(conf);
         if (b)
           setItens(
-            JSON.parse(b).map((it) =>
-              it.estado === 'lendo' ? { ...it, estado: 'erro', erro: 'Leitura interrompida. Toque para tentar de novo.' } : it
-            )
+            JSON.parse(b).map((it0) => {
+              const it = it0.fil ? it0 : { ...it0, fil: [novoFil(conf.filamentos[0].id, it0.gD || '')] };
+              return it.estado === 'lendo' ? { ...it, estado: 'erro', erro: 'Leitura interrompida. Toque para tentar de novo.' } : it;
+            })
           );
         if (c) setPecas(JSON.parse(c));
         if (d) setOrcs(JSON.parse(d));
@@ -221,19 +278,17 @@ export default function App() {
   const pronto = (it) => it.estado !== 'lendo' && it.estado !== 'erro';
   const fotoDe = (it, c = cfg) => {
     const min = minutosDe(it.tD, c.modoHora);
-    const g = valorDecimal(it.gD);
-    return { id: novoId(), nome: it.nome || 'Peça', foto: it.foto || null, min, g, preco: precoDe(min, g, c), data: Date.now() };
+    const fil = filDoItem(it).map((f) => ({ nome: tipoPorId(c, f.tipo).nome, g: valorDecimal(f.gD) }));
+    return { id: novoId(), nome: it.nome || 'Peça', foto: it.foto || null, min, g: gramasDoItem(it), fil, preco: precoDoItem(it, c), data: Date.now() };
   };
 
   const total = useMemo(() => {
     let preco = 0, min = 0, g = 0, n = 0;
     for (const it of itens) {
       if (!pronto(it)) continue;
-      const m = minutosDe(it.tD, cfg.modoHora);
-      const gr = valorDecimal(it.gD);
-      preco += precoDe(m, gr, cfg);
-      min += m;
-      g += gr;
+      preco += precoDoItem(it, cfg);
+      min += minutosDe(it.tD, cfg.modoHora);
+      g += gramasDoItem(it);
       n++;
     }
     const taxa = n ? valorDecimal(cfg.taxaFixa) : 0;
@@ -249,12 +304,16 @@ export default function App() {
       while (fila.length) {
         const it = fila.shift();
         try {
-          const r = await lerFoto(it.foto, cfgRef.current.senha);
+          const c = cfgRef.current;
+          const r = await lerFoto(it.foto, c.senha);
+          const fil = r.filamentos.length
+            ? r.filamentos.map((f) => novoFil(tipoPorNome(c, f.tipo).id, digitosDecimal(f.gramas)))
+            : [novoFil(tiposDe(c)[0].id, digitosDecimal(r.gramas))];
           mudarItem(it.id, {
             estado: 'ok',
             nome: r.nome || it.nome,
-            tD: digitosTempo(r.minutos, cfgRef.current.modoHora),
-            gD: digitosDecimal(r.gramas),
+            tD: digitosTempo(r.minutos, c.modoHora),
+            fil,
             certeza: r.certeza,
             erro: '',
           });
@@ -273,7 +332,7 @@ export default function App() {
       id: novoId(),
       nome: `Peça ${base + i + 1}`,
       tD: '',
-      gD: '',
+      fil: [novoFil(tiposDe(cfg)[0].id)],
       foto: a.uri,
       estado: 'lendo',
       erro: '',
@@ -309,16 +368,28 @@ export default function App() {
   };
 
   const adicionarManual = () =>
-    setItens((l) => [...l, { id: novoId(), nome: `Peça ${l.length + 1}`, tD: '', gD: '', foto: null, estado: 'ok', erro: '' }]);
+    setItens((l) => [...l, { id: novoId(), nome: `Peça ${l.length + 1}`, tD: '', fil: [novoFil(tiposDe(cfg)[0].id)], foto: null, estado: 'ok', erro: '' }]);
 
-  // trocar a foto de uma peça (ex.: foto da peça pronta), sem ler de novo
-  const trocarFoto = async (it) => {
-    const p = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!p.granted) return mostrarAviso('Sem permissão para abrir as fotos.');
-    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+  // toque na foto: com foto abre ampliada; sem foto abre a escolha galeria/câmera
+  // trocar a foto nunca lê os números de novo
+  const tocarFoto = (tipo, obj) => setAlvoFoto({ tipo, id: obj.id, modo: obj.foto ? 'ver' : 'escolher' });
+  const objDoAlvo = alvoFoto ? (alvoFoto.tipo === 'item' ? itens : pecas).find((x) => x.id === alvoFoto.id) || null : null;
+  const fotoNoVisor = alvoFoto && alvoFoto.modo === 'ver' ? objDoAlvo : null;
+  const mudarFotoDoVisor = (foto) => {
+    if (!alvoFoto) return;
+    if (alvoFoto.tipo === 'item') mudarItem(alvoFoto.id, { foto });
+    else setPecas((l) => l.map((x) => (x.id === alvoFoto.id ? { ...x, foto } : x)));
+  };
+  const trocarFoto = async (fonte) => {
+    const p = fonte === 'camera' ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!p.granted) return mostrarAviso(fonte === 'camera' ? 'Sem permissão para usar a câmera.' : 'Sem permissão para abrir as fotos.');
+    const r =
+      fonte === 'camera'
+        ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 })
+        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
     if (r.canceled) return;
-    const nova = await guardarFoto(r.assets[0].uri);
-    mudarItem(it.id, { foto: nova });
+    mudarFotoDoVisor(await guardarFoto(r.assets[0].uri));
+    if (alvoFoto && alvoFoto.modo === 'escolher') setAlvoFoto(null);
   };
 
   const tentarDeNovo = (it) => {
@@ -337,7 +408,7 @@ export default function App() {
   const usarPeca = (p) => {
     setItens((l) => [
       ...l,
-      { id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), gD: digitosDecimal(p.g), estado: 'ok', erro: '' },
+      { id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), estado: 'ok', erro: '' },
     ]);
     setAba('calcular');
     mostrarAviso('Peça adicionada ao cálculo');
@@ -348,6 +419,10 @@ export default function App() {
     const orc = { id: novoId(), cliente: cliente.trim(), data: Date.now(), itens: lista, taxa: total.taxa, total: total.preco };
     setOrcs((l) => [orc, ...l]);
     setSalvarOrc(false);
+    if (limparDepoisDeSalvar.current) {
+      limparDepoisDeSalvar.current = false;
+      setItens([]);
+    }
     if (enviar) await enviarPdf(orc);
     else mostrarAviso('Orçamento salvo');
   };
@@ -363,10 +438,34 @@ export default function App() {
 
   const abrirOrcamento = (o) => {
     setItens(
-      o.itens.map((p) => ({ id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), gD: digitosDecimal(p.g), estado: 'ok', erro: '' }))
+      o.itens.map((p) => ({ id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), estado: 'ok', erro: '' }))
     );
     setAba('calcular');
     mostrarAviso('Orçamento aberto no cálculo');
+  };
+
+  // botão + : começa um orçamento do zero
+  const tocarNovo = () => {
+    setAba('calcular');
+    if (!itens.length) return mostrarAviso('Pronto para um orçamento novo');
+    setNovoOrc(true);
+  };
+  const comecarNovo = (salvarAntes) => {
+    setNovoOrc(false);
+    if (salvarAntes) {
+      limparDepoisDeSalvar.current = true;
+      setSalvarOrc(true);
+    } else {
+      setItens([]);
+      mostrarAviso('Orçamento novo');
+    }
+  };
+
+  const escolherTipo = (tipoId) => {
+    if (!escolhaTipo) return;
+    const it = itens.find((x) => x.id === escolhaTipo.itemId);
+    if (it) mudarItem(it.id, { fil: filDoItem(it).map((f) => (f.id === escolhaTipo.filId ? { ...f, tipo: tipoId } : f)) });
+    setEscolhaTipo(null);
   };
 
   const copiar = async () => {
@@ -382,6 +481,9 @@ export default function App() {
     setCfg(novo);
   };
 
+  const algumModal = ajustes || salvarOrc || !!alvoFoto || !!cartao || novoOrc || !!escolhaTipo;
+  const rolagem = useRolarParaCampo(!algumModal);
+
   if (!carregado || !fontes) {
     return (
       <View style={[s.tela, s.centro]}>
@@ -393,7 +495,7 @@ export default function App() {
   return (
     <View style={s.tela}>
       <StatusBar style="light" />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         {/* topo */}
         <View style={s.topo}>
           <View style={s.marca}>
@@ -435,7 +537,13 @@ export default function App() {
           <Aba texto={`Salvos${pecas.length + orcs.length ? ` (${pecas.length + orcs.length})` : ''}`} ativa={aba === 'salvos'} onPress={() => setAba('salvos')} />
         </View>
 
-        <ScrollView contentContainerStyle={s.conteudo} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          ref={rolagem.ref}
+          onScroll={rolagem.onScroll}
+          scrollEventThrottle={16}
+          contentContainerStyle={s.conteudo}
+          keyboardShouldPersistTaps="handled"
+        >
           {aba === 'calcular' ? (
             <>
               {/* total */}
@@ -484,7 +592,8 @@ export default function App() {
                     onRetry={() => tentarDeNovo(it)}
                     onSalvar={() => salvarPeca(it)}
                     onCompartilhar={() => compartilharItem(it)}
-                    onTrocarFoto={() => trocarFoto(it)}
+                    onFoto={() => tocarFoto('item', it)}
+                    onEscolherTipo={(filId) => setEscolhaTipo({ itemId: it.id, filId })}
                   />
                 ))
               )}
@@ -510,6 +619,7 @@ export default function App() {
                       p={p}
                       modo={cfg.modoHora}
                       onCompartilhar={() => setCartao(p)}
+                      onFoto={() => tocarFoto('peca', p)}
                       onUsar={() => usarPeca(p)}
                       onApagar={() => setPecas((l) => l.filter((x) => x.id !== p.id))}
                     />
@@ -533,6 +643,12 @@ export default function App() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      <Pressable onPress={tocarNovo} style={({ pressed }) => [s.fab, pressed && { transform: [{ scale: 0.94 }] }]}>
+        <View style={s.fabFundo}>
+          <Ionicons name="add" size={32} color={C.fundo} />
+        </View>
+      </Pressable>
+
       {aviso ? (
         <View style={s.aviso} pointerEvents="none">
           <Text style={s.avisoTexto}>{aviso}</Text>
@@ -541,7 +657,33 @@ export default function App() {
 
       <Ajustes visivel={ajustes} cfg={cfg} onFechar={() => setAjustes(false)} onSalvar={salvarAjustes} />
       <CompartilharImagem peca={cartao} modo={cfg.modoHora} onFechar={() => setCartao(null)} onErro={() => mostrarAviso('Não consegui gerar a imagem.')} />
-      <SalvarOrcamento visivel={salvarOrc} total={total} onFechar={() => setSalvarOrc(false)} onGuardar={guardarOrcamento} />
+      <SalvarOrcamento
+        visivel={salvarOrc}
+        total={total}
+        onFechar={() => {
+          limparDepoisDeSalvar.current = false;
+          setSalvarOrc(false);
+        }}
+        onGuardar={guardarOrcamento}
+      />
+      <VisorFoto
+        peca={fotoNoVisor}
+        onFechar={() => setAlvoFoto(null)}
+        onTrocar={trocarFoto}
+        onRemover={() => {
+          mudarFotoDoVisor(null);
+          setAlvoFoto(null);
+        }}
+      />
+      <EscolherFoto visivel={!!alvoFoto && alvoFoto.modo === 'escolher'} onFechar={() => setAlvoFoto(null)} onEscolher={trocarFoto} />
+      <EscolherTipo
+        visivel={!!escolhaTipo}
+        tipos={tiposDe(cfg)}
+        atual={escolhaTipo ? (filDoItem(itens.find((x) => x.id === escolhaTipo.itemId) || {}).find((f) => f.id === escolhaTipo.filId) || {}).tipo : null}
+        onEscolher={escolherTipo}
+        onFechar={() => setEscolhaTipo(null)}
+      />
+      <NovoOrcamento visivel={novoOrc} n={itens.length} onFechar={() => setNovoOrc(false)} onEscolher={comecarNovo} />
     </View>
   );
 }
@@ -657,7 +799,7 @@ function Vazio({ icone, titulo, texto }) {
 function Campo({ rotulo, digitos, onDigitos, mostrar, placeholder, sufixo, prefixo, flex = 1 }) {
   return (
     <View style={{ flex }}>
-      <Text style={s.campoRotulo}>{rotulo}</Text>
+      {rotulo ? <Text style={s.campoRotulo}>{rotulo}</Text> : null}
       <View style={s.campoCaixa}>
         {prefixo ? <Text style={[s.campoSufixo, { marginLeft: 0, marginRight: 6 }]}>{prefixo}</Text> : null}
         <TextInput
@@ -674,34 +816,127 @@ function Campo({ rotulo, digitos, onDigitos, mostrar, placeholder, sufixo, prefi
   );
 }
 
+// miniatura da foto: com foto, toque abre ampliada; sem foto, mostra o logo apagadinho e o toque abre galeria/câmera
 function Miniatura({ foto, onPress }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
       {foto ? (
         <Image source={{ uri: foto }} style={s.miniatura} />
       ) : (
-        <View style={[s.miniatura, s.centro]}>
-          <Ionicons name="image" size={18} color={C.fraco} />
+        <View style={[s.miniatura, s.centro, s.miniaturaVazia]}>
+          <Image source={LOGO} style={s.miniaturaLogo} />
         </View>
       )}
     </Pressable>
   );
 }
 
+function VisorFoto({ peca, onFechar, onTrocar, onRemover }) {
+  return (
+    <Modal visible={!!peca} animationType="fade" transparent={false} onRequestClose={onFechar}>
+      <View style={s.visor}>
+        <View style={s.visorTopo}>
+          <Text style={s.visorNome} numberOfLines={1}>{peca ? peca.nome : ''}</Text>
+          <Pressable onPress={onFechar} hitSlop={12} style={s.visorFechar}>
+            <Ionicons name="close" size={24} color={C.texto} />
+          </Pressable>
+        </View>
+        <Pressable style={{ flex: 1 }} onPress={onFechar}>
+          {peca && peca.foto ? (
+            <Image source={{ uri: peca.foto }} style={{ flex: 1 }} resizeMode="contain" />
+          ) : (
+            <View style={[{ flex: 1 }, s.centro]}>
+              <Image source={LOGO} style={{ width: 120, height: 128, opacity: 0.3 }} />
+              <Text style={[s.vazioTexto, { marginTop: 10 }]}>Essa peça ainda não tem foto.</Text>
+            </View>
+          )}
+        </Pressable>
+        <View style={s.visorBotoes}>
+          <Pressable onPress={() => onTrocar('galeria')} style={({ pressed }) => [s.visorBotao, pressed && { opacity: 0.7 }]}>
+            <Ionicons name="images" size={20} color={C.ciano} />
+            <Text style={s.visorBotaoTexto}>Galeria</Text>
+          </Pressable>
+          <Pressable onPress={() => onTrocar('camera')} style={({ pressed }) => [s.visorBotao, pressed && { opacity: 0.7 }]}>
+            <Ionicons name="camera" size={20} color={C.ciano} />
+            <Text style={s.visorBotaoTexto}>Câmera</Text>
+          </Pressable>
+          {peca && peca.foto ? (
+            <Pressable onPress={onRemover} style={({ pressed }) => [s.visorBotao, pressed && { opacity: 0.7 }]}>
+              <Ionicons name="trash" size={20} color={C.erro} />
+              <Text style={[s.visorBotaoTexto, { color: C.erro }]}>Apagar</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function EscolherFoto({ visivel, onFechar, onEscolher }) {
+  return (
+    <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
+      <View style={s.modalFundo}>
+        <Pressable style={{ flex: 1 }} onPress={onFechar} />
+        <View style={s.modal}>
+          <View style={s.modalAlca} />
+          <Text style={s.modalTitulo}>Foto da peça</Text>
+          <View style={[s.visorBotoes, { paddingHorizontal: 0, paddingBottom: 4 }]}>
+            <Pressable onPress={() => onEscolher('galeria')} style={({ pressed }) => [s.visorBotao, pressed && { opacity: 0.7 }]}>
+              <Ionicons name="images" size={22} color={C.ciano} />
+              <Text style={s.visorBotaoTexto}>Galeria</Text>
+            </Pressable>
+            <Pressable onPress={() => onEscolher('camera')} style={({ pressed }) => [s.visorBotao, pressed && { opacity: 0.7 }]}>
+              <Ionicons name="camera" size={22} color={C.ciano} />
+              <Text style={s.visorBotaoTexto}>Câmera</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function EscolherTipo({ visivel, tipos, atual, onEscolher, onFechar }) {
+  return (
+    <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
+      <View style={s.modalFundo}>
+        <Pressable style={{ flex: 1 }} onPress={onFechar} />
+        <View style={s.modal}>
+          <View style={s.modalAlca} />
+          <Text style={s.modalTitulo}>Tipo de filamento</Text>
+          <Text style={s.modalSub}>Os tipos e preços ficam nos Ajustes.</Text>
+          <View style={{ marginTop: 12 }}>
+            {tipos.map((t) => {
+              const sel = t.id === atual || (!atual && t.id === tipos[0].id);
+              return (
+                <Pressable key={t.id} onPress={() => onEscolher(t.id)} style={({ pressed }) => [s.tipoOpcao, sel && s.tipoOpcaoSel, pressed && { opacity: 0.7 }]}>
+                  <Text style={[s.tipoOpcaoNome, sel && { color: C.ciano }]}>{t.nome || 'Sem nome'}</Text>
+                  <Text style={s.tipoOpcaoPreco}>{reais(valorDecimal(t.precoD))}/g</Text>
+                  {sel ? <Ionicons name="checkmark-circle" size={20} color={C.ciano} /> : <View style={{ width: 20 }} />}
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Peça no cálculo
 // ---------------------------------------------------------------------------
-function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, onCompartilhar, onTrocarFoto }) {
-  const min = minutosDe(it.tD, cfg.modoHora);
-  const g = valorDecimal(it.gD);
-  const preco = precoDe(min, g, cfg);
+function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, onCompartilhar, onFoto, onEscolherTipo }) {
+  const preco = precoDoItem(it, cfg);
+  const fil = filDoItem(it);
+  const mudarFil = (id, campos) => onChange({ fil: fil.map((f) => (f.id === id ? { ...f, ...campos } : f)), estado: 'ok' });
   const fracionada = cfg.modoHora === 'fracionada';
   const ok = it.estado !== 'lendo' && it.estado !== 'erro';
 
   return (
     <View style={s.item}>
       <View style={s.itemTopo}>
-        <Miniatura foto={it.foto} onPress={onTrocarFoto} />
+        <Miniatura foto={it.foto} onPress={it.estado === 'lendo' ? undefined : onFoto} />
         <View style={{ flex: 1 }}>
           <TextInput value={it.nome} onChangeText={(t) => onChange({ nome: t })} style={s.itemNome} placeholder="Nome da peça" placeholderTextColor={C.fraco} />
           {it.estado === 'lendo' ? (
@@ -724,17 +959,37 @@ function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, onCompartilhar, 
       </View>
 
       {it.estado !== 'lendo' ? (
-        <View style={s.campos}>
-          <Campo
-            rotulo={fracionada ? 'Tempo (horas)' : 'Tempo (h:min)'}
-            digitos={it.tD}
-            onDigitos={(d) => onChange({ tD: d, estado: 'ok' })}
-            mostrar={(d) => mostrarTempoCampo(d, cfg.modoHora)}
-            placeholder={fracionada ? '0,00' : '0:00'}
-            sufixo="h"
-          />
-          <Campo rotulo="Filamento" digitos={it.gD} onDigitos={(d) => onChange({ gD: d, estado: 'ok' })} mostrar={mostrarDecimal} placeholder="0,00" sufixo="g" />
-        </View>
+        <>
+          <View style={s.campos}>
+            <Campo
+              rotulo={fracionada ? 'Tempo (horas)' : 'Tempo (h:min)'}
+              digitos={it.tD}
+              onDigitos={(d) => onChange({ tD: d, estado: 'ok' })}
+              mostrar={(d) => mostrarTempoCampo(d, cfg.modoHora)}
+              placeholder={fracionada ? '0,00' : '0:00'}
+              sufixo="h"
+            />
+          </View>
+          <Text style={[s.campoRotulo, { marginTop: 12 }]}>Filamento</Text>
+          {fil.map((f) => (
+            <View key={f.id} style={s.filLinha}>
+              <Pressable onPress={() => onEscolherTipo(f.id)} style={({ pressed }) => [s.tipoBotao, pressed && { opacity: 0.7 }]}>
+                <Text style={s.tipoBotaoTexto} numberOfLines={1}>{tipoPorId(cfg, f.tipo).nome || 'Tipo'}</Text>
+                <Ionicons name="chevron-down" size={14} color={C.suave} />
+              </Pressable>
+              <Campo digitos={f.gD} onDigitos={(d) => mudarFil(f.id, { gD: d })} mostrar={mostrarDecimal} placeholder="0,00" sufixo="g" />
+              {fil.length > 1 ? (
+                <Pressable onPress={() => onChange({ fil: fil.filter((x) => x.id !== f.id) })} hitSlop={8} style={s.filTirar}>
+                  <Ionicons name="close" size={18} color={C.fraco} />
+                </Pressable>
+              ) : null}
+            </View>
+          ))}
+          <Pressable onPress={() => onChange({ fil: [...fil, novoFil(tiposDe(cfg)[0].id)] })} style={s.filMais} hitSlop={6}>
+            <Ionicons name="add-circle" size={16} color={C.ciano} />
+            <Text style={s.filMaisTexto}>Outro filamento</Text>
+          </Pressable>
+        </>
       ) : null}
 
       <View style={s.itemRodape}>
@@ -750,16 +1005,16 @@ function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, onCompartilhar, 
 // ---------------------------------------------------------------------------
 // Salvos
 // ---------------------------------------------------------------------------
-function PecaSalva({ p, modo, onCompartilhar, onUsar, onApagar }) {
+function PecaSalva({ p, modo, onCompartilhar, onFoto, onUsar, onApagar }) {
   return (
     <View style={s.item}>
       <View style={s.itemTopo}>
-        <Miniatura foto={p.foto} onPress={onCompartilhar} />
+        <Miniatura foto={p.foto} onPress={onFoto} />
         <View style={{ flex: 1 }}>
           <Text style={s.itemNome} numberOfLines={1}>{p.nome}</Text>
           <Text style={s.itemPreco}>{reais(p.preco)}</Text>
           <Text style={s.itemDetalhe}>
-            {gramasTexto(p.g)} · {tempoTexto(p.min, modo)} · {dataTexto(p.data)}
+            {gramasTexto(p.g)}{nomesDosTipos(p.fil) ? ` ${nomesDosTipos(p.fil)}` : ''} · {tempoTexto(p.min, modo)} · {dataTexto(p.data)}
           </Text>
         </View>
       </View>
@@ -840,6 +1095,7 @@ function CompartilharImagem({ peca, modo, onFechar, onErro }) {
                     <View>
                       <Text style={s.cartaoRotulo}>FILAMENTO</Text>
                       <Text style={s.cartaoValor}>{gramasTexto(peca.g)}</Text>
+                      {nomesDosTipos(peca.fil) ? <Text style={s.cartaoTipos}>{nomesDosTipos(peca.fil)}</Text> : null}
                     </View>
                   </View>
                   <View style={s.cartaoDado}>
@@ -894,7 +1150,7 @@ function SalvarOrcamento({ visivel, total, onFechar, onGuardar }) {
 
   return (
     <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
-      <KeyboardAvoidingView style={s.modalFundo} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={s.modalFundo} behavior="padding">
         <Pressable style={{ flex: 1 }} onPress={onFechar} />
         <View style={s.modal}>
           <View style={s.modalAlca} />
@@ -929,35 +1185,96 @@ function SalvarOrcamento({ visivel, total, onFechar, onGuardar }) {
 }
 
 // ---------------------------------------------------------------------------
+// Começar orçamento novo quando já tem peças no cálculo
+// ---------------------------------------------------------------------------
+function NovoOrcamento({ visivel, n, onFechar, onEscolher }) {
+  return (
+    <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
+      <View style={s.modalFundo}>
+        <Pressable style={{ flex: 1 }} onPress={onFechar} />
+        <View style={s.modal}>
+          <View style={s.modalAlca} />
+          <Text style={s.modalTitulo}>Novo orçamento</Text>
+          <Text style={s.modalSub}>
+            O cálculo atual tem {n} {n === 1 ? 'peça' : 'peças'}. O que fazer com ele?
+          </Text>
+          <Pressable onPress={() => onEscolher(true)} style={({ pressed }) => [s.botaoGrande, { marginTop: 20, flex: 0 }, pressed && { opacity: 0.8 }]}>
+            <Ionicons name="bookmark" size={18} color={C.fundo} />
+            <Text style={s.botaoGrandeTexto}>Salvar e começar novo</Text>
+          </Pressable>
+          <Pressable onPress={() => onEscolher(false)} style={({ pressed }) => [s.botaoGrande, s.botaoGrandeSec, { marginTop: 10, flex: 0 }, pressed && { opacity: 0.7 }]}>
+            <Ionicons name="trash" size={18} color={C.erro} />
+            <Text style={[s.botaoGrandeTexto, { color: C.erro }]}>Descartar e começar novo</Text>
+          </Pressable>
+          <Pressable onPress={onFechar} style={{ alignSelf: 'center', padding: 12, marginTop: 4 }}>
+            <Text style={[s.limparTexto, { fontSize: 14 }]}>Cancelar</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Ajustes
 // ---------------------------------------------------------------------------
 function Ajustes({ visivel, cfg, onFechar, onSalvar }) {
   const [r, setR] = useState(cfg);
   const [verSenha, setVerSenha] = useState(false);
+  const rolagem = useRolarParaCampo(visivel);
   useEffect(() => {
-    if (visivel) setR(cfg);
+    if (visivel) setR({ ...cfg, filamentos: tiposDe(cfg) });
   }, [visivel]);
 
+  const mudarTipo = (id, campos) => setR({ ...r, filamentos: r.filamentos.map((t) => (t.id === id ? { ...t, ...campos } : t)) });
+
   const salvar = () => {
-    onSalvar({ ...r, senha: String(r.senha || '').trim() });
+    const filamentos = r.filamentos
+      .filter((t) => t.nome.trim() || t.precoD)
+      .map((t) => ({ ...t, nome: t.nome.trim() || 'Filamento' }));
+    onSalvar({ ...r, filamentos: filamentos.length ? filamentos : FIL_PADRAO, senha: String(r.senha || '').trim() });
     onFechar();
   };
 
   return (
     <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
-      <KeyboardAvoidingView style={s.modalFundo} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={s.modalFundo} behavior="padding">
         <Pressable style={{ flex: 1 }} onPress={onFechar} />
         <View style={s.modal}>
           <View style={s.modalAlca} />
-          <ScrollView keyboardShouldPersistTaps="handled">
+          <ScrollView ref={rolagem.ref} onScroll={rolagem.onScroll} scrollEventThrottle={16} keyboardShouldPersistTaps="handled">
             <Text style={s.modalTitulo}>Seus preços</Text>
             <View style={s.campos}>
-              <Campo rotulo="Por grama" digitos={r.precoGrama} onDigitos={(d) => setR({ ...r, precoGrama: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" />
               <Campo rotulo="Por hora" digitos={r.precoHora} onDigitos={(d) => setR({ ...r, precoHora: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" />
+              <Campo rotulo="Taxa por pedido" digitos={r.taxaFixa} onDigitos={(d) => setR({ ...r, taxaFixa: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" />
             </View>
-            <View style={[s.campos, { marginTop: 10 }]}>
-              <Campo rotulo="Taxa fixa por pedido (opcional)" digitos={r.taxaFixa} onDigitos={(d) => setR({ ...r, taxaFixa: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" />
-            </View>
+
+            <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Filamentos</Text>
+            <Text style={s.modalSub}>Cada tipo com o seu preço por grama.</Text>
+            {(r.filamentos || []).map((t) => (
+              <View key={t.id} style={[s.filLinha, { marginTop: 8 }]}>
+                <View style={[s.campoCaixa, { flex: 1 }]}>
+                  <TextInput
+                    value={t.nome}
+                    onChangeText={(v) => mudarTipo(t.id, { nome: v })}
+                    placeholder="PLA, PETG..."
+                    placeholderTextColor={C.fraco}
+                    autoCapitalize="characters"
+                    style={[s.campoInput, { textAlign: 'left', fontSize: 16 }]}
+                  />
+                </View>
+                <Campo digitos={t.precoD} onDigitos={(d) => mudarTipo(t.id, { precoD: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" sufixo="/g" />
+                {r.filamentos.length > 1 ? (
+                  <Pressable onPress={() => setR({ ...r, filamentos: r.filamentos.filter((x) => x.id !== t.id) })} hitSlop={8} style={s.filTirar}>
+                    <Ionicons name="trash" size={17} color={C.fraco} />
+                  </Pressable>
+                ) : null}
+              </View>
+            ))}
+            <Pressable onPress={() => setR({ ...r, filamentos: [...r.filamentos, { id: novoId(), nome: '', precoD: '' }] })} style={s.filMais} hitSlop={6}>
+              <Ionicons name="add-circle" size={16} color={C.ciano} />
+              <Text style={s.filMaisTexto}>Adicionar filamento</Text>
+            </Pressable>
 
             <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Formato do tempo</Text>
             <View style={[s.segmento, { marginTop: 10 }]}>
@@ -1004,7 +1321,9 @@ function Ajustes({ visivel, cfg, onFechar, onSalvar }) {
 const s = StyleSheet.create({
   tela: { flex: 1, backgroundColor: C.fundo },
   centro: { alignItems: 'center', justifyContent: 'center' },
-  conteudo: { padding: 16, paddingTop: 6, paddingBottom: 48 },
+  conteudo: { padding: 16, paddingTop: 6, paddingBottom: 110 },
+  fab: { position: 'absolute', right: 20, bottom: 28, width: 60, height: 60, borderRadius: 30, elevation: 8 },
+  fabFundo: { width: 60, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center', backgroundColor: C.laranja },
 
   topo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 50, paddingBottom: 12 },
   marca: { flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -1052,6 +1371,15 @@ const s = StyleSheet.create({
   item: { backgroundColor: C.cartao, borderRadius: 16, padding: 14, paddingBottom: 6, marginTop: 10, borderWidth: 1, borderColor: C.linha },
   itemTopo: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   miniatura: { width: 54, height: 54, borderRadius: 10, backgroundColor: C.cartao2 },
+  miniaturaLogo: { width: 34, height: 36, opacity: 0.32 },
+  miniaturaVazia: { borderWidth: 1, borderColor: C.linha, borderStyle: 'dashed' },
+  visor: { flex: 1, backgroundColor: '#000' },
+  visorTopo: { flexDirection: 'row', alignItems: 'center', paddingTop: 48, paddingHorizontal: 16, paddingBottom: 10 },
+  visorNome: { flex: 1, fontFamily: F.titulo, color: C.texto, fontSize: 18 },
+  visorFechar: { padding: 6 },
+  visorBotoes: { flexDirection: 'row', gap: 10, padding: 16, paddingBottom: 32 },
+  visorBotao: { flex: 1, alignItems: 'center', gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: C.cartao, borderWidth: 1, borderColor: C.linha },
+  visorBotaoTexto: { fontFamily: F.textoNegrito, color: C.texto, fontSize: 12 },
   itemNome: { fontFamily: F.textoNegrito, color: C.texto, fontSize: 16, padding: 0 },
   itemPreco: { fontFamily: F.titulo, color: C.laranja, fontSize: 17, marginTop: 2 },
   itemDetalhe: { fontFamily: F.texto, color: C.suave, fontSize: 13, marginTop: 1 },
@@ -1064,6 +1392,16 @@ const s = StyleSheet.create({
   apagarTexto: { fontFamily: F.textoNegrito, color: C.erro, fontSize: 13 },
 
   campos: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  filLinha: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  tipoBotao: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4, width: 96, backgroundColor: C.cartao2, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 12, borderWidth: 1, borderColor: C.linha },
+  tipoBotaoTexto: { fontFamily: F.textoNegrito, color: C.texto, fontSize: 14, flexShrink: 1 },
+  filTirar: { padding: 6 },
+  filMais: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingVertical: 4 },
+  filMaisTexto: { fontFamily: F.textoNegrito, color: C.ciano, fontSize: 13 },
+  tipoOpcao: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 14, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1, borderColor: C.linha, marginBottom: 8, backgroundColor: C.cartao2 },
+  tipoOpcaoSel: { borderColor: C.ciano },
+  tipoOpcaoNome: { flex: 1, fontFamily: F.textoNegrito, color: C.texto, fontSize: 15 },
+  tipoOpcaoPreco: { fontFamily: F.textoMedio, color: C.suave, fontSize: 13 },
   campoRotulo: { fontFamily: F.textoForte, color: C.suave, fontSize: 12, marginBottom: 5 },
   campoCaixa: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.cartao2, borderRadius: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: C.linha },
   campoInput: { flex: 1, fontFamily: F.titulo, color: C.texto, fontSize: 18, paddingVertical: 9, textAlign: 'right' },
@@ -1072,7 +1410,7 @@ const s = StyleSheet.create({
   limpar: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'center', marginTop: 18, padding: 6 },
   limparTexto: { fontFamily: F.textoForte, color: C.fraco, fontSize: 13 },
 
-  aviso: { position: 'absolute', bottom: 40, left: 16, right: 16, backgroundColor: C.cartao2, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: C.linha },
+  aviso: { position: 'absolute', bottom: 36, left: 16, right: 92, backgroundColor: C.cartao2, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: C.linha },
   avisoTexto: { fontFamily: F.textoForte, color: C.texto, textAlign: 'center', fontSize: 14 },
 
   modalFundo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' },
@@ -1096,6 +1434,7 @@ const s = StyleSheet.create({
   cartaoDado: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: C.cartao, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: C.linha },
   cartaoRotulo: { fontFamily: F.textoNegrito, color: C.suave, fontSize: 10, letterSpacing: 1.5 },
   cartaoValor: { fontFamily: F.titulo, color: C.texto, fontSize: 18, marginTop: 1 },
+  cartaoTipos: { fontFamily: F.textoForte, color: C.suave, fontSize: 11, marginTop: 1 },
   cartaoTotal: { marginTop: 10, backgroundColor: C.laranjaEscuro, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#5a3418' },
   cartaoPreco: { fontFamily: F.titulo, color: C.laranja, fontSize: 34, marginTop: 2 },
 });

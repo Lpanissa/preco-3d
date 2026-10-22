@@ -8,7 +8,9 @@ const INSTRUCAO =
   'Se houver várias placas ou várias cores, some tudo. Se o filamento aparecer só em metros, converta considerando filamento 1,75 mm de PLA (cerca de 2,98 g por metro). ' +
   'Se aparecer a quantidade de cópias/peças, o total já deve incluir todas. ' +
   'Responda SOMENTE com JSON, sem nenhum outro texto: ' +
-  '{"nome":"nome curto da peça ou do arquivo, se aparecer, senão vazio","minutos":numero inteiro de minutos ou null,"gramas":numero ou null,"certeza":"alta" ou "media" ou "baixa"}';
+  '{"nome":"nome curto da peça ou do arquivo, se aparecer, senão vazio","minutos":numero inteiro de minutos ou null,"gramas":numero total ou null,' +
+  '"filamentos":[{"tipo":"PLA, PETG, ABS, TPU etc. como aparecer na tela, ou vazio","gramas":numero}],"certeza":"alta" ou "media" ou "baixa"}. ' +
+  'Em "filamentos" ponha um item para cada tipo/cor de filamento que aparecer com o peso dele; se não houver detalhe por filamento, ponha um item só com o total.';
 
 export async function lerFoto(uri, senha) {
   const img = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: 1400 } }], {
@@ -42,8 +44,11 @@ export async function lerFoto(uri, senha) {
   const ok = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
   const minutos = ok(j.minutos) ? Math.round(Number(j.minutos)) : null;
   const gramas = ok(j.gramas) ? Number(j.gramas) : null;
-  if (minutos === null && gramas === null) throw new Error('nada');
-  return { nome: String(j.nome || '').slice(0, 40), minutos, gramas, certeza: j.certeza || 'media' };
+  const filamentos = (Array.isArray(j.filamentos) ? j.filamentos : [])
+    .filter((f) => f && ok(f.gramas))
+    .map((f) => ({ tipo: String(f.tipo || '').trim().slice(0, 20), gramas: Number(f.gramas) }));
+  if (minutos === null && gramas === null && !filamentos.length) throw new Error('nada');
+  return { nome: String(j.nome || '').slice(0, 40), minutos, gramas, filamentos, certeza: j.certeza || 'media' };
 }
 
 export const mensagemErro = (e) => {
