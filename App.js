@@ -88,7 +88,39 @@ const tipoPorNome = (cfg, nome) => {
   const n = String(nome || '').trim().toLowerCase();
   return (n && tiposDe(cfg).find((t) => t.nome.trim().toLowerCase() === n)) || tiposDe(cfg)[0];
 };
-const novoFil = (tipo, gD = '') => ({ id: novoId(), tipo, gD });
+const novoFil = (tipo, gD = '', rolo = null) => ({ id: novoId(), tipo, gD, rolo });
+// estoque de filamento: cada rolo com tipo, cor, preço pago e peso (o preço por grama sai daí)
+const rolosDe = (cfg) => cfg.rolos || [];
+const roloPorId = (cfg, id) => (id ? rolosDe(cfg).find((r) => r.id === id) || null : null);
+const precoGramaRolo = (r) => {
+  const peso = parseInt(r.peso || '1000', 10) || 1000;
+  return valorDecimal(r.precoD) / peso;
+};
+// preço do grama com 3 casas (R$ 0,0999 vira R$ 0,100), para não esconder a diferença entre rolos
+const reaisGrama = (v) => 'R$ ' + (v || 0).toFixed(3).replace('.', ',');
+// preço do grama de um filamento da peça: do rolo escolhido, ou o padrão do tipo
+const precoGramaFil = (f, cfg) => {
+  const r = roloPorId(cfg, f.rolo);
+  if (r && valorDecimal(r.precoD) > 0) return precoGramaRolo(r);
+  return valorDecimal(tipoPorId(cfg, f.tipo).precoD);
+};
+const nomeFil = (f, cfg) => {
+  const r = roloPorId(cfg, f.rolo);
+  const t = tipoPorId(cfg, r ? r.tipo : f.tipo).nome || 'Filamento';
+  return r && r.cor ? `${t} ${r.cor}` : t;
+};
+// lista do seletor: cada tipo (preço padrão) seguido dos rolos dele no estoque
+const opcoesFilamento = (cfg) =>
+  tiposDe(cfg).flatMap((t) => [
+    { id: 'T:' + t.id, nome: `${t.nome} (padrão)`, precoTexto: `${reais(valorDecimal(t.precoD))}/g` },
+    ...rolosDe(cfg)
+      .filter((r) => r.tipo === t.id)
+      .map((r) => ({ id: 'R:' + r.id, nome: `${t.nome} ${r.cor || ''}`.trim(), precoTexto: `${reaisGrama(precoGramaRolo(r))}/g`, rolo: true })),
+  ]);
+const roloPorNome = (cfg, nome) => {
+  const n = String(nome || '').trim().toLowerCase();
+  return rolosDe(cfg).find((r) => `${tipoPorId(cfg, r.tipo).nome} ${r.cor}`.trim().toLowerCase() === n) || null;
+};
 // cada peça tem uma lista de filamentos (tipo + gramas)
 const filDoItem = (it) => (it.fil && it.fil.length ? it.fil : [{ id: 'f0', tipo: null, gD: it.gD || '' }]);
 const gramasDoItem = (it) => filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD), 0);
@@ -122,7 +154,7 @@ const arredondar = (v, cfg) => {
 // desconto por quantidade, arredonda para cima, vezes a quantidade
 function contaDoItem(it, cfg) {
   const min = minutosDe(it.tD, cfg.modoHora);
-  const filCusto = filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD) * valorDecimal(tipoPorId(cfg, f.tipo).precoD), 0);
+  const filCusto = filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD) * precoGramaFil(f, cfg), 0);
   const base = (filCusto + (min / 60) * valorDecimal(cfg.precoHora)) * (1 + valorDecimal(cfg.falhaD) / 100);
   const cheia = base + custoExtras(it, cfg) + valorDecimal(it.maoD);
   const qtd = qtdDe(it);
@@ -143,7 +175,10 @@ const precoDoItem = (it, cfg) => contaDoItem(it, cfg).total;
 const numeroTexto = (n) => '#' + String(n || 0).padStart(3, '0');
 // peça salva/orçamento -> filamentos editáveis de novo
 const filDeSnapshot = (p, cfg) =>
-  (p.fil && p.fil.length ? p.fil : [{ nome: '', g: p.g }]).map((f) => novoFil(tipoPorNome(cfg, f.nome).id, digitosGramas(f.g)));
+  (p.fil && p.fil.length ? p.fil : [{ nome: '', g: p.g }]).map((f) => {
+    const r = roloPorNome(cfg, f.nome);
+    return r ? novoFil(r.tipo, digitosGramas(f.g), r.id) : novoFil(tipoPorNome(cfg, f.nome).id, digitosGramas(f.g));
+  });
 const extDeSnapshot = (p, cfg) =>
   (p.ext || []).map((e) => ({ id: novoId(), mat: (matPorNome(cfg, e.nome) || {}).id || null, qtd: String(e.qtd || 1) })).filter((e) => e.mat);
 const extTexto = (ext) => (ext || []).map((e) => `${e.qtd > 1 ? e.qtd + ' ' : ''}${e.nome}`).join(', ');
@@ -337,7 +372,7 @@ export default function App() {
   const pronto = (it) => it.estado !== 'lendo' && it.estado !== 'erro';
   const fotoDe = (it, c = cfg) => {
     const min = minutosDe(it.tD, c.modoHora);
-    const fil = filDoItem(it).map((f) => ({ nome: tipoPorId(c, f.tipo).nome, g: valorDecimal(f.gD) }));
+    const fil = filDoItem(it).map((f) => ({ nome: nomeFil(f, c), g: valorDecimal(f.gD) }));
     const ext = extDoItem(it)
       .map((e) => ({ nome: (matPorId(c, e.mat) || {}).nome, qtd: Math.max(1, parseInt(e.qtd || '1', 10) || 1) }))
       .filter((e) => e.nome);
@@ -372,9 +407,12 @@ export default function App() {
         const it = fila.shift();
         try {
           const c = cfgRef.current;
-          const r = await lerFoto(it.foto, c.senha);
+          const r = await lerFoto(it.foto, c.senha, rolosDe(c).map((ro) => ({ id: ro.id, tipo: tipoPorId(c, ro.tipo).nome, cor: ro.cor })));
           const fil = r.filamentos.length
-            ? r.filamentos.map((f) => novoFil(tipoPorNome(c, f.tipo).id, digitosGramas(f.gramas)))
+            ? r.filamentos.map((f) => {
+                const ro = roloPorId(c, f.rolo);
+                return ro ? novoFil(ro.tipo, digitosGramas(f.gramas), ro.id) : novoFil(tipoPorNome(c, f.tipo).id, digitosGramas(f.gramas));
+              })
             : [novoFil(tiposDe(c)[0].id, digitosGramas(r.gramas))];
           mudarItem(it.id, {
             estado: 'ok',
@@ -547,7 +585,11 @@ export default function App() {
     if (!escolhaTipo) return;
     const it = itens.find((x) => x.id === escolhaTipo.itemId);
     if (it && escolhaTipo.extId) mudarItem(it.id, { ext: extDoItem(it).map((e) => (e.id === escolhaTipo.extId ? { ...e, mat: tipoId } : e)) });
-    else if (it) mudarItem(it.id, { fil: filDoItem(it).map((f) => (f.id === escolhaTipo.filId ? { ...f, tipo: tipoId } : f)) });
+    else if (it) {
+      const ro = String(tipoId).startsWith('R:') ? roloPorId(cfg, tipoId.slice(2)) : null;
+      const novo = ro ? { tipo: ro.tipo, rolo: ro.id } : { tipo: String(tipoId).slice(2), rolo: null };
+      mudarItem(it.id, { fil: filDoItem(it).map((f) => (f.id === escolhaTipo.filId ? { ...f, ...novo } : f)) });
+    }
     setEscolhaTipo(null);
   };
   const adicionarMaterial = (it) => {
@@ -778,12 +820,15 @@ export default function App() {
         visivel={!!escolhaTipo}
         titulo={escolhaTipo && escolhaTipo.extId ? 'Acessório' : 'Tipo de filamento'}
         sufixo={escolhaTipo && escolhaTipo.extId ? '/un.' : '/g'}
-        tipos={escolhaTipo && escolhaTipo.extId ? outrosDe(cfg) : tiposDe(cfg)}
+        tipos={escolhaTipo && escolhaTipo.extId ? outrosDe(cfg) : opcoesFilamento(cfg)}
         atual={
           escolhaTipo
             ? escolhaTipo.extId
               ? (extDoItem(itens.find((x) => x.id === escolhaTipo.itemId) || {}).find((e) => e.id === escolhaTipo.extId) || {}).mat
-              : (filDoItem(itens.find((x) => x.id === escolhaTipo.itemId) || {}).find((f) => f.id === escolhaTipo.filId) || {}).tipo
+              : (() => {
+                  const f = filDoItem(itens.find((x) => x.id === escolhaTipo.itemId) || {}).find((x) => x.id === escolhaTipo.filId) || {};
+                  return f.rolo && roloPorId(cfg, f.rolo) ? 'R:' + f.rolo : 'T:' + f.tipo;
+                })()
             : null
         }
         onEscolher={escolherTipo}
@@ -869,7 +914,7 @@ function IconeBotao({ nome, cor = C.suave, onPress }) {
 }
 
 // apagar com dois toques: o primeiro pergunta, o segundo apaga
-function ConfirmarApagar({ texto, onConfirmar, estilo, soIcone }) {
+function ConfirmarApagar({ texto, onConfirmar, estilo, soIcone, compacto }) {
   const [armado, setArmado] = useState(false);
   useEffect(() => {
     if (!armado) return;
@@ -879,7 +924,7 @@ function ConfirmarApagar({ texto, onConfirmar, estilo, soIcone }) {
   const tocar = () => (armado ? onConfirmar() : setArmado(true));
   if (soIcone) {
     return (
-      <Pressable onPress={tocar} hitSlop={8} style={[s.iconeBotao, armado && s.apagarArmado]}>
+      <Pressable onPress={tocar} hitSlop={8} style={[s.iconeBotao, compacto && { paddingHorizontal: 2 }, armado && s.apagarArmado]}>
         {armado ? <Text style={s.apagarTexto}>Apagar?</Text> : <Ionicons name="trash" size={18} color={C.fraco} />}
       </Pressable>
     );
@@ -902,9 +947,9 @@ function Vazio({ icone, titulo, texto }) {
   );
 }
 
-function Campo({ rotulo, digitos, onDigitos, mostrar, placeholder, sufixo, prefixo, flex = 1 }) {
+function Campo({ rotulo, digitos, onDigitos, mostrar, placeholder, sufixo, prefixo, flex = 1, largura }) {
   return (
-    <View style={{ flex }}>
+    <View style={largura ? { width: largura } : { flex }}>
       {rotulo ? <Text style={s.campoRotulo}>{rotulo}</Text> : null}
       <View style={s.campoCaixa}>
         {prefixo ? <Text style={[s.campoSufixo, { marginLeft: 0, marginRight: 6 }]}>{prefixo}</Text> : null}
@@ -1033,18 +1078,19 @@ function EscolherTipo({ visivel, titulo, sufixo, tipos, atual, onEscolher, onFec
           <View style={s.modalAlca} />
           <Text style={s.modalTitulo}>{titulo}</Text>
           <Text style={s.modalSub}>Os nomes e preços ficam na aba Materiais.</Text>
-          <View style={{ marginTop: 12 }}>
+          <ScrollView style={{ marginTop: 12, maxHeight: 420 }}>
             {tipos.map((t) => {
               const sel = t.id === atual || (!atual && t.id === tipos[0].id);
               return (
                 <Pressable key={t.id} onPress={() => onEscolher(t.id)} style={({ pressed }) => [s.tipoOpcao, sel && s.tipoOpcaoSel, pressed && { opacity: 0.7 }]}>
+                  {t.rolo ? <Ionicons name="ellipse" size={8} color={C.suave} style={{ marginLeft: 8 }} /> : null}
                   <Text style={[s.tipoOpcaoNome, sel && { color: C.ciano }]}>{t.nome || 'Sem nome'}</Text>
-                  <Text style={s.tipoOpcaoPreco}>{reais(valorDecimal(t.precoD))}{sufixo}</Text>
+                  <Text style={s.tipoOpcaoPreco}>{t.precoTexto || `${reais(valorDecimal(t.precoD))}${sufixo}`}</Text>
                   {sel ? <Ionicons name="checkmark-circle" size={20} color={C.ciano} /> : <View style={{ width: 20 }} />}
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -1114,7 +1160,7 @@ function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, salvo, onCompart
               {fil.map((f, i) => (
                 <View key={f.id} style={[s.filLinha, i === fil.length - 1 && { marginBottom: 0 }]}>
                   <Pressable onPress={() => onEscolherTipo(f.id)} style={({ pressed }) => [s.tipoBotao, s.tipoBotaoCurto, pressed && { opacity: 0.7 }]}>
-                    <Text style={s.tipoBotaoTexto} numberOfLines={1}>{tipoPorId(cfg, f.tipo).nome || 'Tipo'}</Text>
+                    <Text style={[s.tipoBotaoTexto, f.rolo && { fontSize: 12 }]} numberOfLines={1}>{nomeFil(f, cfg)}</Text>
                     <Ionicons name="chevron-down" size={13} color={C.suave} />
                   </Pressable>
                   <Campo digitos={f.gD} onDigitos={(d) => mudarFil(f.id, { gD: gramasParaDigitos(d) })} mostrar={mostrarGramas} placeholder="0" sufixo="g" />
@@ -1475,6 +1521,9 @@ function NovoOrcamento({ visivel, n, onFechar, onEscolher }) {
 function Materiais({ cfg, setCfg }) {
   const fil = tiposDe(cfg);
   const outros = outrosDe(cfg);
+  const rolos = rolosDe(cfg);
+  const [escolher, setEscolher] = useState(null); // rolo que está escolhendo o tipo
+  const mudarRolo = (id, campos) => setCfg((c) => ({ ...c, rolos: rolosDe(c).map((r) => (r.id === id ? { ...r, ...campos } : r)) }));
   const mudar = (lista, id, campos) =>
     setCfg((c) => ({ ...c, [lista]: (lista === 'filamentos' ? tiposDe(c) : outrosDe(c)).map((t) => (t.id === id ? { ...t, ...campos } : t)) }));
   const tirar = (lista, id) =>
@@ -1483,8 +1532,8 @@ function Materiais({ cfg, setCfg }) {
     setCfg((c) => ({ ...c, [lista]: [...(lista === 'filamentos' ? tiposDe(c) : outrosDe(c)), { id: novoId(), nome: '', precoD: '' }] }));
 
   const linha = (lista, t, podeTirar, sufixo, exemplo) => (
-    <View key={t.id} style={[s.filLinha, { marginTop: 8 }]}>
-      <View style={[s.campoCaixa, { flex: 1.3 }]}>
+    <View key={t.id} style={[s.filLinha, { marginTop: 8, gap: 6 }]}>
+      <View style={[s.campoCaixa, { flex: 1 }]}>
         <TextInput
           value={t.nome}
           onChangeText={(v) => mudar(lista, t.id, { nome: v })}
@@ -1494,11 +1543,11 @@ function Materiais({ cfg, setCfg }) {
           style={[s.campoInput, { textAlign: 'left', fontSize: 16 }]}
         />
       </View>
-      <Campo digitos={t.precoD} onDigitos={(d) => mudar(lista, t.id, { precoD: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" sufixo={sufixo} />
+      <Campo largura={sufixo === '/g' ? 124 : 134} digitos={t.precoD} onDigitos={(d) => mudar(lista, t.id, { precoD: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" sufixo={sufixo} />
       {podeTirar ? (
-        <ConfirmarApagar soIcone onConfirmar={() => tirar(lista, t.id)} />
+        <ConfirmarApagar soIcone compacto onConfirmar={() => tirar(lista, t.id)} />
       ) : (
-        <View style={{ width: 34 }} />
+        <View style={{ width: 22 }} />
       )}
     </View>
   );
@@ -1507,13 +1556,67 @@ function Materiais({ cfg, setCfg }) {
     <>
       <View style={s.item}>
         <Text style={s.modalTitulo}>Filamentos</Text>
-        <Text style={s.modalSub}>Preço que você cobra por grama de cada tipo.</Text>
+        <Text style={s.modalSub}>Preço padrão por grama de cada tipo (usado quando a peça não tem rolo do estoque).</Text>
         {fil.map((t) => linha('filamentos', t, fil.length > 1, '/g', 'PLA, PETG...'))}
         <Pressable onPress={() => somar('filamentos')} style={[s.filMais, { marginBottom: 8 }]} hitSlop={6}>
           <Ionicons name="add-circle" size={16} color={C.ciano} />
           <Text style={s.filMaisTexto}>Adicionar filamento</Text>
         </Pressable>
       </View>
+
+      <View style={s.item}>
+        <Text style={s.modalTitulo}>Estoque de filamento</Text>
+        <Text style={s.modalSub}>Cada rolo com a cor e o preço que você pagou. Na leitura da foto o app escolhe o rolo pela cor e usa o preço dele.</Text>
+        {rolos.length === 0 ? <Text style={[s.itemDetalhe, { marginTop: 10 }]}>Nenhum rolo ainda.</Text> : null}
+        {rolos.map((r) => (
+          <View key={r.id} style={s.rolo}>
+            <View style={[s.filLinha, { gap: 6 }]}>
+              <Pressable onPress={() => setEscolher(r.id)} style={({ pressed }) => [s.tipoBotao, { width: 84 }, pressed && { opacity: 0.7 }]}>
+                <Text style={s.tipoBotaoTexto} numberOfLines={1}>{tipoPorId(cfg, r.tipo).nome || 'Tipo'}</Text>
+                <Ionicons name="chevron-down" size={13} color={C.suave} />
+              </Pressable>
+              <View style={[s.campoCaixa, { flex: 1 }]}>
+                <TextInput
+                  value={r.cor}
+                  onChangeText={(v) => mudarRolo(r.id, { cor: v })}
+                  placeholder="Cor (ex.: Preto)"
+                  placeholderTextColor={C.fraco}
+                  style={[s.campoInput, { textAlign: 'left', fontSize: 16 }]}
+                />
+              </View>
+              <ConfirmarApagar soIcone compacto onConfirmar={() => setCfg((c) => ({ ...c, rolos: rolosDe(c).filter((x) => x.id !== r.id) }))} />
+            </View>
+            <View style={[s.filLinha, { gap: 6, marginBottom: 0 }]}>
+              <Campo rotulo="Preço pago no rolo" digitos={r.precoD} onDigitos={(d) => mudarRolo(r.id, { precoD: gramasParaDigitos(d) })} mostrar={mostrarGramas} placeholder="130" prefixo="R$" />
+              <Campo rotulo="Peso do rolo" digitos={r.peso || ''} onDigitos={(d) => mudarRolo(r.id, { peso: d.slice(0, 5) })} mostrar={(d) => d} placeholder="1000" sufixo="g" />
+              <View style={{ width: 70, alignItems: 'flex-end', justifyContent: 'flex-end', alignSelf: 'stretch', paddingBottom: 12 }}>
+                <Text style={s.roloGrama}>{valorDecimal(r.precoD) > 0 ? `${reaisGrama(precoGramaRolo(r))}/g` : '—'}</Text>
+              </View>
+            </View>
+          </View>
+        ))}
+        <Pressable
+          onPress={() => setCfg((c) => ({ ...c, rolos: [...rolosDe(c), { id: novoId(), tipo: tiposDe(c)[0].id, cor: '', precoD: '', peso: '1000' }] }))}
+          style={[s.filMais, { marginBottom: 8, marginTop: 6 }]}
+          hitSlop={6}
+        >
+          <Ionicons name="add-circle" size={16} color={C.ciano} />
+          <Text style={s.filMaisTexto}>Adicionar rolo</Text>
+        </Pressable>
+      </View>
+
+      <EscolherTipo
+        visivel={!!escolher}
+        titulo="Tipo do rolo"
+        sufixo="/g"
+        tipos={fil}
+        atual={escolher ? (rolos.find((x) => x.id === escolher) || {}).tipo : null}
+        onEscolher={(id) => {
+          mudarRolo(escolher, { tipo: id });
+          setEscolher(null);
+        }}
+        onFechar={() => setEscolher(null)}
+      />
 
       <View style={s.item}>
         <Text style={s.modalTitulo}>Acessórios</Text>
@@ -1746,8 +1849,10 @@ const s = StyleSheet.create({
   tipoBotao: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4, width: 96, backgroundColor: C.cartao2, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 12, borderWidth: 1, borderColor: C.linha },
   tipoBotaoTexto: { fontFamily: F.textoNegrito, color: C.texto, fontSize: 14, flexShrink: 1 },
   filTirar: { padding: 6 },
+  rolo: { borderTopWidth: 1, borderTopColor: C.linha, paddingTop: 10, marginTop: 10 },
+  roloGrama: { fontFamily: F.textoNegrito, color: C.ciano, fontSize: 13 },
   maisLinha: { flexDirection: 'row', gap: 18, flexWrap: 'wrap' },
-  tipoBotaoCurto: { width: 72, paddingHorizontal: 9 },
+  tipoBotaoCurto: { width: 84, paddingHorizontal: 9 },
   filTirarCurto: { paddingVertical: 6, paddingHorizontal: 0 },
   filMais: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingVertical: 4 },
   filMaisTexto: { fontFamily: F.textoNegrito, color: C.ciano, fontSize: 13 },
