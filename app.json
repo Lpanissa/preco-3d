@@ -2,16 +2,16 @@
   "expo": {
     "name": "Preço 3D",
     "slug": "preco-3d",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#0B0B0C",
+    "backgroundColor": "#070b12",
     "icon": "./assets/icon.png",
     "android": {
       "package": "dev.panissa.preco3d",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0B0B0C"
+        "backgroundColor": "#070b12"
       },
       "softwareKeyboardLayoutMode": "resize"
     },

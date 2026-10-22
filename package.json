@@ -1,6 +1,6 @@
 {
   "name": "preco-3d",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "main": "index.js",
   "dependencies": {
@@ -9,8 +9,15 @@
     "expo-image-picker": "*",
     "expo-image-manipulator": "*",
     "expo-clipboard": "*",
+    "expo-sharing": "*",
+    "expo-print": "*",
+    "expo-file-system": "*",
+    "expo-font": "*",
+    "@expo-google-fonts/chakra-petch": "*",
+    "@expo-google-fonts/barlow": "*",
     "@expo/vector-icons": "*",
     "@react-native-async-storage/async-storage": "*",
+    "react-native-view-shot": "*",
     "react": "*",
     "react-native": "*"
   }
