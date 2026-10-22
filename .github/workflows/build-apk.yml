@@ -34,6 +34,9 @@ jobs:
         with:
           cache-read-only: false
 
+      - name: Marcar versão
+        run: echo "{\"sha\":\"$GITHUB_SHA\"}" > build.json
+
       - name: Instalar dependências
         run: npm install --legacy-peer-deps
 

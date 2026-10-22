@@ -49,7 +49,7 @@ export async function enviarOrcamentoPdf(orc, modoHora) {
   .topo { background: #070b12; color: #e8f0f8; padding: 28px 36px; display: flex; align-items: center; gap: 18px; }
   .topo img { width: 64px; height: 68px; }
   .marca { font-family: 'Chakra Petch', Arial, sans-serif; font-weight: 700; font-size: 30px; letter-spacing: 1px; line-height: 1; }
-  .marca .a { color: #3fd4e6; } .marca .b { color: #f08a3c; }
+  .marca { background: linear-gradient(90deg, #3fd4e6, #f08a3c); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; display: inline-block; }
   .slogan { color: #93a6bd; font-size: 13px; margin-top: 6px; letter-spacing: 2px; text-transform: uppercase; }
   .faixa { height: 4px; background: linear-gradient(90deg, #3fd4e6, #f08a3c); }
   .corpo { padding: 28px 36px 40px; }
@@ -73,7 +73,7 @@ export async function enviarOrcamentoPdf(orc, modoHora) {
 </style></head><body>
   <div class="topo">
     <img src="data:image/png;base64,${LOGO64}"/>
-    <div><div class="marca"><span class="a">MATERI</span><span class="b">ALIZZA</span></div><div class="slogan">Layer by Layer</div></div>
+    <div><div class="marca">MATERIALIZZA</div><div class="slogan">Layer by Layer</div></div>
   </div>
   <div class="faixa"></div>
   <div class="corpo">

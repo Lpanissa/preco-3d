@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -21,6 +22,9 @@ import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { captureRef } from 'react-native-view-shot';
+import { requireOptionalNativeModule } from 'expo-modules-core';
+import MaskedView from '@react-native-masked-view/masked-view';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useFonts, ChakraPetch_600SemiBold, ChakraPetch_700Bold } from '@expo-google-fonts/chakra-petch';
 import { Barlow_400Regular, Barlow_500Medium, Barlow_600SemiBold, Barlow_700Bold } from '@expo-google-fonts/barlow';
 
@@ -42,7 +46,10 @@ import {
 import { lerFoto, mensagemErro } from './src/ia';
 import { enviarOrcamentoPdf } from './src/pdf';
 
+import build from './build.json';
+
 const LOGO = require('./assets/logo.png');
+const ATUALIZADOR = requireOptionalNativeModule('PrecoUpdate');
 
 // ---------------------------------------------------------------------------
 // Dados guardados
@@ -104,6 +111,8 @@ export default function App() {
   const [cartao, setCartao] = useState(null); // peça a compartilhar como imagem
   const [salvarOrc, setSalvarOrc] = useState(false);
   const [aviso, setAviso] = useState('');
+  const [novaVersao, setNovaVersao] = useState(false);
+  const [atualizando, setAtualizando] = useState('');
   const avisoTimer = useRef(null);
   const cfgRef = useRef(cfg);
   cfgRef.current = cfg;
@@ -174,6 +183,30 @@ export default function App() {
     // só ao abrir o app
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carregado]);
+
+  // procura versão nova ao abrir e sempre que o app volta para a tela
+  useEffect(() => {
+    const ver = () => {
+      if (!ATUALIZADOR) return;
+      ATUALIZADOR.verificar(build.sha || 'dev').then((r) => setNovaVersao(!!r)).catch(() => {});
+    };
+    ver();
+    const sub = AppState.addEventListener('change', (st) => st === 'active' && ver());
+    return () => sub.remove();
+  }, []);
+
+  const atualizar = async () => {
+    if (!ATUALIZADOR || atualizando === 'baixando') return;
+    setAtualizando('baixando');
+    try {
+      const r = await ATUALIZADOR.instalar();
+      if (r === 'ok') setAtualizando('instalar');
+      else if (r === 'permissao') setAtualizando('permissao');
+      else setAtualizando('erro');
+    } catch (e) {
+      setAtualizando('erro');
+    }
+  };
 
   const mostrarAviso = (t) => {
     setAviso(t);
@@ -375,6 +408,27 @@ export default function App() {
           </Pressable>
         </View>
 
+        {novaVersao ? (
+          <Pressable onPress={atualizar} style={({ pressed }) => [s.atualizacao, pressed && { opacity: 0.8 }]}>
+            <Ionicons name="cloud-download" size={20} color={C.fundo} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.atualizacaoTitulo}>
+                {atualizando === 'baixando'
+                  ? 'Baixando a versão nova...'
+                  : atualizando === 'instalar'
+                  ? 'Toque em Atualizar na tela do Android'
+                  : atualizando === 'permissao'
+                  ? 'Permita instalar apps e toque aqui de novo'
+                  : atualizando === 'erro'
+                  ? 'Não deu para baixar. Toque para tentar de novo'
+                  : 'Versão nova disponível'}
+              </Text>
+              {!atualizando ? <Text style={s.atualizacaoSub}>Toque para baixar e atualizar</Text> : null}
+            </View>
+            {atualizando === 'baixando' ? <ActivityIndicator color={C.fundo} /> : <Ionicons name="chevron-forward" size={18} color={C.fundo} />}
+          </Pressable>
+        ) : null}
+
         {/* abas */}
         <View style={s.abas}>
           <Aba texto="Calcular" ativa={aba === 'calcular'} onPress={() => setAba('calcular')} />
@@ -386,7 +440,7 @@ export default function App() {
             <>
               {/* total */}
               <View style={s.total}>
-                <View style={s.faixa} />
+                <Faixa estilo={s.faixa} />
                 <Text style={s.rotulo}>TOTAL</Text>
                 <Text style={s.totalValor}>{reais(total.preco)}</Text>
                 <View style={s.linhaResumo}>
@@ -495,13 +549,20 @@ export default function App() {
 // ---------------------------------------------------------------------------
 // Peças pequenas
 // ---------------------------------------------------------------------------
+// nome da loja em degradê contínuo do ciano para o laranja (igual ao site)
 function Marca({ tamanho }) {
+  const estilo = { fontFamily: F.titulo, fontSize: tamanho, letterSpacing: 1, lineHeight: tamanho * 1.15 };
   return (
-    <Text style={{ fontFamily: F.titulo, fontSize: tamanho, letterSpacing: 1, lineHeight: tamanho * 1.15 }}>
-      <Text style={{ color: C.ciano }}>MATERI</Text>
-      <Text style={{ color: C.laranja }}>ALIZZA</Text>
-    </Text>
+    <MaskedView maskElement={<Text style={estilo}>MATERIALIZZA</Text>}>
+      <LinearGradient colors={[C.ciano, C.laranja]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+        <Text style={[estilo, { opacity: 0 }]}>MATERIALIZZA</Text>
+      </LinearGradient>
+    </MaskedView>
   );
+}
+
+function Faixa({ estilo }) {
+  return <LinearGradient colors={[C.ciano, C.laranja]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={estilo} />;
 }
 
 function Aba({ texto, ativa, onPress }) {
@@ -769,7 +830,7 @@ function CompartilharImagem({ peca, modo, onFechar, onErro }) {
                   <Text style={s.cartaoSlogan}>LAYER BY LAYER</Text>
                 </View>
               </View>
-              <View style={s.faixaLinha} />
+              <Faixa estilo={s.faixaLinha} />
               {peca.foto ? <Image source={{ uri: peca.foto }} style={s.cartaoFoto} /> : null}
               <View style={s.cartaoCorpo}>
                 <Text style={s.cartaoNome}>{peca.nome}</Text>
@@ -929,6 +990,7 @@ function Ajustes({ visivel, cfg, onFechar, onSalvar }) {
             <Pressable onPress={salvar} style={({ pressed }) => [s.botaoGrande, { marginTop: 24, flex: 0 }, pressed && { opacity: 0.8 }]}>
               <Text style={s.botaoGrandeTexto}>Salvar</Text>
             </Pressable>
+            <Text style={s.versao}>Versão {String(build.sha || 'dev').slice(0, 7)}</Text>
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
@@ -950,6 +1012,10 @@ const s = StyleSheet.create({
   subMarca: { fontFamily: F.textoMedio, color: C.suave, fontSize: 12, letterSpacing: 0.5 },
   botaoIcone: { padding: 6 },
 
+  atualizacao: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 10, backgroundColor: C.laranja, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 11 },
+  atualizacaoTitulo: { fontFamily: F.textoNegrito, color: C.fundo, fontSize: 14 },
+  atualizacaoSub: { fontFamily: F.textoMedio, color: '#3a2414', fontSize: 12 },
+  versao: { fontFamily: F.texto, color: C.fraco, fontSize: 12, textAlign: 'center', marginTop: 14 },
   abas: { flexDirection: 'row', marginHorizontal: 16, marginBottom: 10, borderBottomWidth: 1, borderBottomColor: C.linha },
   aba: { paddingVertical: 10, marginRight: 22, borderBottomWidth: 2, borderBottomColor: 'transparent', marginBottom: -1 },
   abaAtiva: { borderBottomColor: C.ciano },
@@ -961,8 +1027,8 @@ const s = StyleSheet.create({
   segTexto: { fontFamily: F.textoForte, color: C.suave, fontSize: 14 },
 
   total: { backgroundColor: C.cartao, borderRadius: 18, padding: 20, paddingTop: 22, borderWidth: 1, borderColor: C.linha, overflow: 'hidden' },
-  faixa: { position: 'absolute', top: 0, left: 0, right: 0, height: 3, backgroundColor: C.ciano, borderRightWidth: 160, borderRightColor: C.laranja },
-  faixaLinha: { height: 3, backgroundColor: C.ciano, borderRightWidth: 140, borderRightColor: C.laranja },
+  faixa: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
+  faixaLinha: { height: 3 },
   rotulo: { fontFamily: F.textoNegrito, color: C.suave, fontSize: 12, letterSpacing: 2 },
   totalValor: { fontFamily: F.titulo, color: C.texto, fontSize: 42, marginTop: 2, letterSpacing: -0.5 },
   linhaResumo: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
