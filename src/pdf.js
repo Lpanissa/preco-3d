@@ -28,17 +28,17 @@ const filamentoHtml = (it) => {
   return fil.map((f) => `${f.nome ? `<span class="tipo">${esc(f.nome)}</span> ` : ''}${gramasTexto(f.g)}`).join('<br/>');
 };
 
-export async function enviarOrcamentoPdf(orc, modoHora) {
+export async function enviarOrcamentoPdf(orc, modoHora, impressora = 'Bambu Lab A1 Combo AMS') {
   const fotos = await Promise.all(orc.itens.map((it) => miniatura(it.foto)));
   const linhas = orc.itens
     .map(
       (it, i) => `
       <tr>
         <td class="foto">${fotos[i] ? `<img src="${fotos[i]}"/>` : '<div class="semfoto"></div>'}</td>
-        <td><div class="nome">${esc(it.nome)}</div></td>
+        <td><div class="nome">${(it.qtd || 1) > 1 ? `<span class="qtd">${it.qtd}×</span> ` : ''}${esc(it.nome)}</div>${it.ext && it.ext.length ? `<div class="cada">+ ${esc(it.ext.map((e) => `${e.qtd > 1 ? e.qtd + ' ' : ''}${e.nome}`).join(', '))}${(it.qtd || 1) > 1 ? ' (cada)' : ''}</div>` : ''}</td>
         <td class="num">${filamentoHtml(it)}</td>
         <td class="num">${tempoTexto(it.min, modoHora)}</td>
-        <td class="num valor">${reais(it.preco)}</td>
+        <td class="num valor">${reais(it.preco)}${(it.qtd || 1) > 1 ? `<div class="cada">${reais(it.unidade)} cada${it.desconto ? ` · desc. ${esc(it.desconto.replace(/^-/, '').replace(' cada', ''))}` : ''}</div>` : it.desconto ? `<div class="cada">desc. ${esc(it.desconto.replace(/^-/, ''))}</div>` : ''}</td>
       </tr>`
     )
     .join('');
@@ -58,6 +58,12 @@ export async function enviarOrcamentoPdf(orc, modoHora) {
   .marca { background: linear-gradient(90deg, #3fd4e6, #f08a3c); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; -webkit-text-stroke: 0.7px rgba(7, 11, 18, 0.55); paint-order: stroke fill; display: inline-block; }
   .slogan { color: #3b4b60; font-size: 13px; font-weight: 600; margin-top: 6px; letter-spacing: 2.5px; text-transform: uppercase; }
   .tipo { color: #5b6d85; font-size: 12px; }
+  .qtd { color: #5b6d85; font-weight: 700; }
+  .cada { color: #5b6d85; font-size: 11px; font-weight: 500; margin-top: 2px; }
+  .cab { display: flex; justify-content: space-between; align-items: baseline; }
+  .numero { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 18px; font-weight: 700; color: #5b6d85; }
+  .condicoes { margin-top: 16px; color: #5b6d85; font-size: 13px; line-height: 1.6; }
+  .condicoes b { color: #10202f; }
   .corpo { padding: 28px 36px 40px; }
   h1 { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 24px; margin: 0 0 4px; color: #070b12; }
   .info { color: #5b6d85; font-size: 14px; margin-bottom: 22px; }
@@ -82,13 +88,14 @@ export async function enviarOrcamentoPdf(orc, modoHora) {
     <div><div class="marca">MATERIALIZZA</div><div class="slogan">Layer by Layer</div></div>
   </div>
   <div class="corpo">
-    <h1>Orçamento</h1>
-    <div class="info">${orc.cliente ? `Cliente: <b>${esc(orc.cliente)}</b> &nbsp;·&nbsp; ` : ''}Data: <b>${dataTexto(orc.data)}</b></div>
+    <div class="cab"><h1>Orçamento</h1>${orc.numero ? `<span class="numero">#${String(orc.numero).padStart(3, '0')}</span>` : ''}</div>
+    <div class="info">${orc.cliente ? `Cliente: <b>${esc(orc.cliente)}</b> &nbsp;·&nbsp; ` : ''}Data: <b>${dataTexto(orc.data)}</b>${impressora && impressora.trim() ? `<br/>Impressora: <b>${esc(impressora.trim())}</b>` : ''}</div>
     <table>
       <thead><tr><th></th><th>Peça</th><th class="num">Filamento</th><th class="num">Tempo</th><th class="num">Valor</th></tr></thead>
       <tbody>${linhas}${taxa}</tbody>
     </table>
     <div class="total"><span class="r">Total</span><span class="v">${reais(orc.total)}</span></div>
+    ${orc.validade || orc.prazo ? `<div class="condicoes">${orc.prazo ? `Prazo de entrega: <b>${esc(orc.prazo)}</b><br/>` : ''}${orc.validade ? `Orçamento válido por <b>${orc.validade} ${orc.validade === 1 ? 'dia' : 'dias'}</b> (até ${dataTexto(orc.data + orc.validade * 86400000)})` : ''}</div>` : ''}
     <div class="rodape">Materializza · Impressão 3D</div>
   </div>
 </body></html>`;

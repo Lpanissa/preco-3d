@@ -54,10 +54,15 @@ export function tempoTexto(min, modo) {
   if (!h) return `${r}min`;
   return r ? `${h}h ${String(r).padStart(2, '0')}min` : `${h}h`;
 }
-export const gramasTexto = (g) => {
-  const v = Math.round((g || 0) * 100) / 100;
-  return `${String(v).replace('.', ',')} g`;
+// gramas sempre inteiros: o app guarda em centésimos (compatível com o que já existe) mas mostra e recebe só o número inteiro
+export const mostrarGramas = (d) => (d ? String(Math.round(parseInt(d, 10) / 100)) : '');
+export const gramasParaDigitos = (d) => {
+  const n = soDigitos(d).slice(0, 6);
+  return n ? n + '00' : '';
 };
+export const digitosGramas = (g) => (g === null || g === undefined || !Number.isFinite(g) ? '' : soDigitos(String(Math.round(g) * 100)));
+
+export const gramasTexto = (g) => `${milhar(String(Math.round(g || 0)))} g`;
 export const dataTexto = (ts) => {
   const d = new Date(ts);
   const p = (x) => String(x).padStart(2, '0');

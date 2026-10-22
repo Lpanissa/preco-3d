@@ -38,6 +38,9 @@ import {
   minutosDe,
   digitosTempo,
   digitosDecimal,
+  mostrarGramas,
+  gramasParaDigitos,
+  digitosGramas,
   reais,
   tempoTexto,
   gramasTexto,
@@ -68,6 +71,13 @@ const CONFIG_PADRAO = {
   filamentos: FIL_PADRAO,
   precoHora: '400', // R$ 4,00
   taxaFixa: '', // R$ 0,00
+  falhaD: '', // margem de falha em % ('1000' = 10%)
+  faixas: [], // desconto por quantidade: { id, min: '10', tipo: '%' | 'R$', valorD }
+  validadeDias: '7', // validade do orçamento no PDF ('' = não mostra)
+  proximoNumero: 1, // número do próximo orçamento
+  impressora: 'Bambu Lab A1 Combo AMS', // aparece no PDF ('' = não mostra)
+  arredD: '50', // arredonda o preço de cada peça para cima até o próximo R$ 0,50 ('' = não arredonda)
+  outros: [], // outros materiais cobrados por unidade: { id, nome, precoD }
   modoHora: 'normal', // 'normal' (2:30) ou 'fracionada' (2,50 h)
   senha: '',
 };
@@ -82,12 +92,61 @@ const novoFil = (tipo, gD = '') => ({ id: novoId(), tipo, gD });
 // cada peça tem uma lista de filamentos (tipo + gramas)
 const filDoItem = (it) => (it.fil && it.fil.length ? it.fil : [{ id: 'f0', tipo: null, gD: it.gD || '' }]);
 const gramasDoItem = (it) => filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD), 0);
-const precoDoItem = (it, cfg) =>
-  filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD) * valorDecimal(tipoPorId(cfg, f.tipo).precoD), 0) +
-  (minutosDe(it.tD, cfg.modoHora) / 60) * valorDecimal(cfg.precoHora);
+const qtdDe = (it) => Math.max(1, parseInt(it.qtd || '1', 10) || 1);
+const pctTexto = (d) => mostrarDecimal(d).replace(/,00$/, '') + '%';
+// a melhor faixa de desconto que a quantidade alcança
+const faixaPara = (cfg, qtd) =>
+  (cfg.faixas || [])
+    .filter((f) => parseInt(f.min || '0', 10) > 0 && parseInt(f.min, 10) <= qtd && valorDecimal(f.valorD) > 0)
+    .sort((a, b) => parseInt(b.min, 10) - parseInt(a.min, 10))[0] || null;
+// acessórios (argola, ímã, tinta...) cobrados por unidade
+const outrosDe = (cfg) => cfg.outros || [];
+const matPorId = (cfg, id) => outrosDe(cfg).find((m) => m.id === id) || null;
+const matPorNome = (cfg, nome) => {
+  const n = String(nome || '').trim().toLowerCase();
+  return outrosDe(cfg).find((m) => m.nome.trim().toLowerCase() === n) || null;
+};
+const extDoItem = (it) => (it.ext || []).filter((e) => e && e.mat);
+const custoExtras = (it, cfg) =>
+  extDoItem(it).reduce((a, e) => {
+    const m = matPorId(cfg, e.mat);
+    return a + (m ? valorDecimal(m.precoD) * Math.max(1, parseInt(e.qtd || '1', 10) || 1) : 0);
+  }, 0);
+// sempre arredonda para cima até o próximo degrau (ex.: R$ 0,50)
+const arredondar = (v, cfg) => {
+  const passo = parseInt(cfg.arredD || '0', 10);
+  if (!passo || v <= 0) return v;
+  return (Math.ceil(Math.round(v * 100) / passo - 1e-9) * passo) / 100;
+};
+// conta de uma peça: (filamento + horas) + margem de falha + materiais + mão de obra,
+// desconto por quantidade, arredonda para cima, vezes a quantidade
+function contaDoItem(it, cfg) {
+  const min = minutosDe(it.tD, cfg.modoHora);
+  const filCusto = filDoItem(it).reduce((a, f) => a + valorDecimal(f.gD) * valorDecimal(tipoPorId(cfg, f.tipo).precoD), 0);
+  const base = (filCusto + (min / 60) * valorDecimal(cfg.precoHora)) * (1 + valorDecimal(cfg.falhaD) / 100);
+  const cheia = base + custoExtras(it, cfg) + valorDecimal(it.maoD);
+  const qtd = qtdDe(it);
+  const faixa = faixaPara(cfg, qtd);
+  let unidade = cheia;
+  let desconto = '';
+  if (faixa && faixa.tipo === 'R$') {
+    unidade = Math.max(0, cheia - valorDecimal(faixa.valorD));
+    desconto = `-${reais(valorDecimal(faixa.valorD))} cada`;
+  } else if (faixa) {
+    unidade = cheia * (1 - valorDecimal(faixa.valorD) / 100);
+    desconto = `-${pctTexto(faixa.valorD)}`;
+  }
+  unidade = arredondar(unidade, cfg);
+  return { min, g: gramasDoItem(it), qtd, unidade, cheia, total: unidade * qtd, desconto };
+}
+const precoDoItem = (it, cfg) => contaDoItem(it, cfg).total;
+const numeroTexto = (n) => '#' + String(n || 0).padStart(3, '0');
 // peça salva/orçamento -> filamentos editáveis de novo
 const filDeSnapshot = (p, cfg) =>
-  (p.fil && p.fil.length ? p.fil : [{ nome: '', g: p.g }]).map((f) => novoFil(tipoPorNome(cfg, f.nome).id, digitosDecimal(f.g)));
+  (p.fil && p.fil.length ? p.fil : [{ nome: '', g: p.g }]).map((f) => novoFil(tipoPorNome(cfg, f.nome).id, digitosGramas(f.g)));
+const extDeSnapshot = (p, cfg) =>
+  (p.ext || []).map((e) => ({ id: novoId(), mat: (matPorNome(cfg, e.nome) || {}).id || null, qtd: String(e.qtd || 1) })).filter((e) => e.mat);
+const extTexto = (ext) => (ext || []).map((e) => `${e.qtd > 1 ? e.qtd + ' ' : ''}${e.nome}`).join(', ');
 const nomesDosTipos = (fil) => [...new Set((fil || []).map((f) => f.nome).filter(Boolean))].join(' + ');
 
 // quando o teclado abre, rola a tela para o campo não ficar escondido atrás dele
@@ -279,17 +338,25 @@ export default function App() {
   const fotoDe = (it, c = cfg) => {
     const min = minutosDe(it.tD, c.modoHora);
     const fil = filDoItem(it).map((f) => ({ nome: tipoPorId(c, f.tipo).nome, g: valorDecimal(f.gD) }));
-    return { id: novoId(), nome: it.nome || 'Peça', foto: it.foto || null, min, g: gramasDoItem(it), fil, preco: precoDoItem(it, c), data: Date.now() };
+    const ext = extDoItem(it)
+      .map((e) => ({ nome: (matPorId(c, e.mat) || {}).nome, qtd: Math.max(1, parseInt(e.qtd || '1', 10) || 1) }))
+      .filter((e) => e.nome);
+    const k = contaDoItem(it, c);
+    return {
+      id: novoId(), nome: it.nome || 'Peça', foto: it.foto || null, min, g: k.g, fil, ext,
+      qtd: k.qtd, unidade: k.unidade, desconto: k.desconto, mao: valorDecimal(it.maoD), preco: k.total, data: Date.now(),
+    };
   };
 
   const total = useMemo(() => {
     let preco = 0, min = 0, g = 0, n = 0;
     for (const it of itens) {
       if (!pronto(it)) continue;
-      preco += precoDoItem(it, cfg);
-      min += minutosDe(it.tD, cfg.modoHora);
-      g += gramasDoItem(it);
-      n++;
+      const k = contaDoItem(it, cfg);
+      preco += k.total;
+      min += k.min * k.qtd;
+      g += k.g * k.qtd;
+      n += k.qtd;
     }
     const taxa = n ? valorDecimal(cfg.taxaFixa) : 0;
     return { preco: preco + taxa, taxa, min, g, n };
@@ -307,8 +374,8 @@ export default function App() {
           const c = cfgRef.current;
           const r = await lerFoto(it.foto, c.senha);
           const fil = r.filamentos.length
-            ? r.filamentos.map((f) => novoFil(tipoPorNome(c, f.tipo).id, digitosDecimal(f.gramas)))
-            : [novoFil(tiposDe(c)[0].id, digitosDecimal(r.gramas))];
+            ? r.filamentos.map((f) => novoFil(tipoPorNome(c, f.tipo).id, digitosGramas(f.gramas)))
+            : [novoFil(tiposDe(c)[0].id, digitosGramas(r.gramas))];
           mudarItem(it.id, {
             estado: 'ok',
             nome: r.nome || it.nome,
@@ -399,8 +466,18 @@ export default function App() {
   };
 
   // ---------------- salvar / compartilhar ----------------
+  // marcador: vazio = não salva; cheio = já está nos Salvos. Tocar de novo tira dos Salvos.
+  const pecaSalvaDe = (it) => (it.salvoId ? pecas.find((p) => p.id === it.salvoId) : null);
   const salvarPeca = (it) => {
-    setPecas((l) => [fotoDe(it), ...l]);
+    if (pecaSalvaDe(it)) {
+      setPecas((l) => l.filter((p) => p.id !== it.salvoId));
+      mudarItem(it.id, { salvoId: null });
+      mostrarAviso('Peça tirada dos salvos');
+      return;
+    }
+    const nova = fotoDe(it);
+    setPecas((l) => [nova, ...l]);
+    mudarItem(it.id, { salvoId: nova.id });
     mostrarAviso('Peça salva');
   };
   const compartilharItem = (it) => setCartao(fotoDe(it));
@@ -408,15 +485,20 @@ export default function App() {
   const usarPeca = (p) => {
     setItens((l) => [
       ...l,
-      { id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), estado: 'ok', erro: '' },
+      { id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), ext: extDeSnapshot(p, cfg), qtd: String(p.qtd || 1), maoD: digitosDecimal(p.mao || 0), estado: 'ok', erro: '' },
     ]);
     setAba('calcular');
     mostrarAviso('Peça adicionada ao cálculo');
   };
 
-  const guardarOrcamento = async (cliente, enviar) => {
+  const guardarOrcamento = async (cliente, enviar, prazo) => {
     const lista = itens.filter(pronto).map((it) => fotoDe(it));
-    const orc = { id: novoId(), cliente: cliente.trim(), data: Date.now(), itens: lista, taxa: total.taxa, total: total.preco };
+    const numero = cfg.proximoNumero || orcs.reduce((m, o) => Math.max(m, o.numero || 0), 0) + 1;
+    const orc = {
+      id: novoId(), numero, status: 'aberto', cliente: cliente.trim(), prazo: (prazo || '').trim(),
+      validade: parseInt(cfg.validadeDias || '0', 10) || 0, data: Date.now(), itens: lista, taxa: total.taxa, total: total.preco,
+    };
+    setCfg((c) => ({ ...c, proximoNumero: numero + 1 }));
     setOrcs((l) => [orc, ...l]);
     setSalvarOrc(false);
     if (limparDepoisDeSalvar.current) {
@@ -430,7 +512,7 @@ export default function App() {
   const enviarPdf = async (orc) => {
     try {
       mostrarAviso('Gerando PDF...');
-      await enviarOrcamentoPdf(orc, cfg.modoHora);
+      await enviarOrcamentoPdf(orc, cfg.modoHora, cfg.impressora);
     } catch (e) {
       mostrarAviso('Não consegui gerar o PDF.');
     }
@@ -438,7 +520,7 @@ export default function App() {
 
   const abrirOrcamento = (o) => {
     setItens(
-      o.itens.map((p) => ({ id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), estado: 'ok', erro: '' }))
+      o.itens.map((p) => ({ id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), ext: extDeSnapshot(p, cfg), qtd: String(p.qtd || 1), maoD: digitosDecimal(p.mao || 0), estado: 'ok', erro: '' }))
     );
     setAba('calcular');
     mostrarAviso('Orçamento aberto no cálculo');
@@ -464,8 +546,17 @@ export default function App() {
   const escolherTipo = (tipoId) => {
     if (!escolhaTipo) return;
     const it = itens.find((x) => x.id === escolhaTipo.itemId);
-    if (it) mudarItem(it.id, { fil: filDoItem(it).map((f) => (f.id === escolhaTipo.filId ? { ...f, tipo: tipoId } : f)) });
+    if (it && escolhaTipo.extId) mudarItem(it.id, { ext: extDoItem(it).map((e) => (e.id === escolhaTipo.extId ? { ...e, mat: tipoId } : e)) });
+    else if (it) mudarItem(it.id, { fil: filDoItem(it).map((f) => (f.id === escolhaTipo.filId ? { ...f, tipo: tipoId } : f)) });
     setEscolhaTipo(null);
+  };
+  const adicionarMaterial = (it) => {
+    if (!outrosDe(cfg).length) {
+      mostrarAviso('Cadastre seus acessórios na aba Materiais');
+      setAba('materiais');
+      return;
+    }
+    mudarItem(it.id, { ext: [...extDoItem(it), { id: novoId(), mat: outrosDe(cfg)[0].id, qtd: '1' }] });
   };
 
   const copiar = async () => {
@@ -535,6 +626,7 @@ export default function App() {
         <View style={s.abas}>
           <Aba texto="Calcular" ativa={aba === 'calcular'} onPress={() => setAba('calcular')} />
           <Aba texto={`Salvos${pecas.length + orcs.length ? ` (${pecas.length + orcs.length})` : ''}`} ativa={aba === 'salvos'} onPress={() => setAba('salvos')} />
+          <Aba texto="Materiais" ativa={aba === 'materiais'} onPress={() => setAba('materiais')} />
         </View>
 
         <ScrollView
@@ -544,7 +636,9 @@ export default function App() {
           contentContainerStyle={s.conteudo}
           keyboardShouldPersistTaps="handled"
         >
-          {aba === 'calcular' ? (
+          {aba === 'materiais' ? (
+            <Materiais cfg={cfg} setCfg={setCfg} />
+          ) : aba === 'calcular' ? (
             <>
               {/* total */}
               <View style={s.total}>
@@ -591,9 +685,12 @@ export default function App() {
                     onRemove={() => removerItem(it.id)}
                     onRetry={() => tentarDeNovo(it)}
                     onSalvar={() => salvarPeca(it)}
+                    salvo={!!pecaSalvaDe(it)}
                     onCompartilhar={() => compartilharItem(it)}
                     onFoto={() => tocarFoto('item', it)}
                     onEscolherTipo={(filId) => setEscolhaTipo({ itemId: it.id, filId })}
+                    onEscolherMaterial={(extId) => setEscolhaTipo({ itemId: it.id, extId })}
+                    onAdicionarMaterial={() => adicionarMaterial(it)}
                   />
                 ))
               )}
@@ -628,15 +725,16 @@ export default function App() {
               ) : orcs.length === 0 ? (
                 <Vazio icone="document-text-outline" titulo="Nenhum orçamento salvo" texto="No cálculo, toque em Orçamento PDF para salvar e enviar para o cliente." />
               ) : (
-                orcs.map((o) => (
+                [<ResumoMes key="resumo" orcs={orcs} />].concat(orcs.map((o) => (
                   <OrcamentoSalvo
                     key={o.id}
                     o={o}
                     onPdf={() => enviarPdf(o)}
                     onAbrir={() => abrirOrcamento(o)}
                     onApagar={() => setOrcs((l) => l.filter((x) => x.id !== o.id))}
+                    onStatus={(st) => setOrcs((l) => l.map((x) => (x.id === o.id ? { ...x, status: st } : x)))}
                   />
-                ))
+                )))
               )}
             </>
           )}
@@ -678,8 +776,16 @@ export default function App() {
       <EscolherFoto visivel={!!alvoFoto && alvoFoto.modo === 'escolher'} onFechar={() => setAlvoFoto(null)} onEscolher={trocarFoto} />
       <EscolherTipo
         visivel={!!escolhaTipo}
-        tipos={tiposDe(cfg)}
-        atual={escolhaTipo ? (filDoItem(itens.find((x) => x.id === escolhaTipo.itemId) || {}).find((f) => f.id === escolhaTipo.filId) || {}).tipo : null}
+        titulo={escolhaTipo && escolhaTipo.extId ? 'Acessório' : 'Tipo de filamento'}
+        sufixo={escolhaTipo && escolhaTipo.extId ? '/un.' : '/g'}
+        tipos={escolhaTipo && escolhaTipo.extId ? outrosDe(cfg) : tiposDe(cfg)}
+        atual={
+          escolhaTipo
+            ? escolhaTipo.extId
+              ? (extDoItem(itens.find((x) => x.id === escolhaTipo.itemId) || {}).find((e) => e.id === escolhaTipo.extId) || {}).mat
+              : (filDoItem(itens.find((x) => x.id === escolhaTipo.itemId) || {}).find((f) => f.id === escolhaTipo.filId) || {}).tipo
+            : null
+        }
         onEscolher={escolherTipo}
         onFechar={() => setEscolhaTipo(null)}
       />
@@ -806,6 +912,7 @@ function Campo({ rotulo, digitos, onDigitos, mostrar, placeholder, sufixo, prefi
           value={mostrar(digitos)}
           onChangeText={(t) => onDigitos(soDigitos(t))}
           keyboardType="number-pad"
+          selectTextOnFocus
           placeholder={placeholder}
           placeholderTextColor={C.fraco}
           style={s.campoInput}
@@ -872,6 +979,27 @@ function VisorFoto({ peca, onFechar, onTrocar, onRemover }) {
   );
 }
 
+// quantidade com - e +; dá para digitar também
+function Quantidade({ valor, onMudar }) {
+  return (
+    <View style={[s.campoCaixa, { paddingHorizontal: 4 }]}>
+      <Pressable onPress={() => onMudar(Math.max(1, valor - 1))} hitSlop={6} style={s.qtdBotao}>
+        <Ionicons name="remove" size={18} color={valor > 1 ? C.texto : C.fraco} />
+      </Pressable>
+      <TextInput
+        value={String(valor)}
+        onChangeText={(t) => onMudar(Math.max(1, parseInt(soDigitos(t) || '1', 10)))}
+        keyboardType="number-pad"
+        selectTextOnFocus
+        style={[s.campoInput, { textAlign: 'center' }]}
+      />
+      <Pressable onPress={() => onMudar(valor + 1)} hitSlop={6} style={s.qtdBotao}>
+        <Ionicons name="add" size={18} color={C.texto} />
+      </Pressable>
+    </View>
+  );
+}
+
 function EscolherFoto({ visivel, onFechar, onEscolher }) {
   return (
     <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
@@ -896,22 +1024,22 @@ function EscolherFoto({ visivel, onFechar, onEscolher }) {
   );
 }
 
-function EscolherTipo({ visivel, tipos, atual, onEscolher, onFechar }) {
+function EscolherTipo({ visivel, titulo, sufixo, tipos, atual, onEscolher, onFechar }) {
   return (
     <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
       <View style={s.modalFundo}>
         <Pressable style={{ flex: 1 }} onPress={onFechar} />
         <View style={s.modal}>
           <View style={s.modalAlca} />
-          <Text style={s.modalTitulo}>Tipo de filamento</Text>
-          <Text style={s.modalSub}>Os tipos e preços ficam nos Ajustes.</Text>
+          <Text style={s.modalTitulo}>{titulo}</Text>
+          <Text style={s.modalSub}>Os nomes e preços ficam na aba Materiais.</Text>
           <View style={{ marginTop: 12 }}>
             {tipos.map((t) => {
               const sel = t.id === atual || (!atual && t.id === tipos[0].id);
               return (
                 <Pressable key={t.id} onPress={() => onEscolher(t.id)} style={({ pressed }) => [s.tipoOpcao, sel && s.tipoOpcaoSel, pressed && { opacity: 0.7 }]}>
                   <Text style={[s.tipoOpcaoNome, sel && { color: C.ciano }]}>{t.nome || 'Sem nome'}</Text>
-                  <Text style={s.tipoOpcaoPreco}>{reais(valorDecimal(t.precoD))}/g</Text>
+                  <Text style={s.tipoOpcaoPreco}>{reais(valorDecimal(t.precoD))}{sufixo}</Text>
                   {sel ? <Ionicons name="checkmark-circle" size={20} color={C.ciano} /> : <View style={{ width: 20 }} />}
                 </Pressable>
               );
@@ -926,8 +1054,9 @@ function EscolherTipo({ visivel, tipos, atual, onEscolher, onFechar }) {
 // ---------------------------------------------------------------------------
 // Peça no cálculo
 // ---------------------------------------------------------------------------
-function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, onCompartilhar, onFoto, onEscolherTipo }) {
-  const preco = precoDoItem(it, cfg);
+function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, salvo, onCompartilhar, onFoto, onEscolherTipo, onEscolherMaterial, onAdicionarMaterial }) {
+  const k = contaDoItem(it, cfg);
+  const preco = k.total;
   const fil = filDoItem(it);
   const mudarFil = (id, campos) => onChange({ fil: fil.map((f) => (f.id === id ? { ...f, ...campos } : f)), estado: 'ok' });
   const fracionada = cfg.modoHora === 'fracionada';
@@ -950,51 +1079,97 @@ function Item({ it, cfg, onChange, onRemove, onRetry, onSalvar, onCompartilhar, 
               <Text style={[s.itemStatusTexto, { color: C.erro, flex: 1 }]}>{it.erro}</Text>
             </Pressable>
           ) : (
-            <Text style={s.itemPreco}>
-              {reais(preco)}
-              {it.certeza === 'baixa' ? <Text style={s.itemConfira}>  confira os números</Text> : null}
-            </Text>
+            <View>
+              <Text style={s.itemPreco}>
+                {reais(preco)}
+                {it.certeza === 'baixa' ? <Text style={s.itemConfira}>  confira os números</Text> : null}
+              </Text>
+              {k.qtd > 1 || k.desconto ? (
+                <Text style={s.itemDetalhe}>
+                  {k.qtd > 1 ? `${k.qtd} × ${reais(k.unidade)}` : ''}
+                  {k.desconto ? <Text style={s.itemDesconto}>{`${k.qtd > 1 ? '  ' : ''}${k.desconto}`}</Text> : null}
+                </Text>
+              ) : null}
+            </View>
           )}
         </View>
       </View>
 
       {it.estado !== 'lendo' ? (
         <>
-          <View style={s.campos}>
-            <Campo
-              rotulo={fracionada ? 'Tempo (horas)' : 'Tempo (h:min)'}
-              digitos={it.tD}
-              onDigitos={(d) => onChange({ tD: d, estado: 'ok' })}
-              mostrar={(d) => mostrarTempoCampo(d, cfg.modoHora)}
-              placeholder={fracionada ? '0,00' : '0:00'}
-              sufixo="h"
-            />
-          </View>
-          <Text style={[s.campoRotulo, { marginTop: 12 }]}>Filamento</Text>
-          {fil.map((f) => (
-            <View key={f.id} style={s.filLinha}>
-              <Pressable onPress={() => onEscolherTipo(f.id)} style={({ pressed }) => [s.tipoBotao, pressed && { opacity: 0.7 }]}>
-                <Text style={s.tipoBotaoTexto} numberOfLines={1}>{tipoPorId(cfg, f.tipo).nome || 'Tipo'}</Text>
-                <Ionicons name="chevron-down" size={14} color={C.suave} />
-              </Pressable>
-              <Campo digitos={f.gD} onDigitos={(d) => mudarFil(f.id, { gD: d })} mostrar={mostrarDecimal} placeholder="0,00" sufixo="g" />
-              {fil.length > 1 ? (
-                <Pressable onPress={() => onChange({ fil: fil.filter((x) => x.id !== f.id) })} hitSlop={8} style={s.filTirar}>
-                  <Ionicons name="close" size={18} color={C.fraco} />
-                </Pressable>
-              ) : null}
+          {/* tempo à esquerda, filamento(s) à direita */}
+          <View style={[s.campos, { alignItems: 'flex-start' }]}>
+            <View style={{ flex: 1 }}>
+              <Campo
+                rotulo={fracionada ? 'Tempo (horas)' : 'Tempo (h:min)'}
+                digitos={it.tD}
+                onDigitos={(d) => onChange({ tD: d, estado: 'ok' })}
+                mostrar={(d) => mostrarTempoCampo(d, cfg.modoHora)}
+                placeholder={fracionada ? '0,00' : '0:00'}
+                sufixo="h"
+              />
             </View>
-          ))}
-          <Pressable onPress={() => onChange({ fil: [...fil, novoFil(tiposDe(cfg)[0].id)] })} style={s.filMais} hitSlop={6}>
-            <Ionicons name="add-circle" size={16} color={C.ciano} />
-            <Text style={s.filMaisTexto}>Outro filamento</Text>
-          </Pressable>
+            <View style={{ flex: 1.45 }}>
+              <Text style={s.campoRotulo}>Filamento</Text>
+              {fil.map((f, i) => (
+                <View key={f.id} style={[s.filLinha, i === fil.length - 1 && { marginBottom: 0 }]}>
+                  <Pressable onPress={() => onEscolherTipo(f.id)} style={({ pressed }) => [s.tipoBotao, s.tipoBotaoCurto, pressed && { opacity: 0.7 }]}>
+                    <Text style={s.tipoBotaoTexto} numberOfLines={1}>{tipoPorId(cfg, f.tipo).nome || 'Tipo'}</Text>
+                    <Ionicons name="chevron-down" size={13} color={C.suave} />
+                  </Pressable>
+                  <Campo digitos={f.gD} onDigitos={(d) => mudarFil(f.id, { gD: gramasParaDigitos(d) })} mostrar={mostrarGramas} placeholder="0" sufixo="g" />
+                  {fil.length > 1 ? (
+                    <Pressable onPress={() => onChange({ fil: fil.filter((x) => x.id !== f.id) })} hitSlop={8} style={s.filTirarCurto}>
+                      <Ionicons name="close" size={16} color={C.fraco} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </View>
+          {extDoItem(it).length ? <Text style={[s.campoRotulo, { marginTop: 10 }]}>Acessórios</Text> : null}
+          {extDoItem(it).map((e) => {
+            const m = matPorId(cfg, e.mat);
+            const q = Math.max(1, parseInt(e.qtd || '1', 10) || 1);
+            const mudarExt = (campos) => onChange({ ext: extDoItem(it).map((x) => (x.id === e.id ? { ...x, ...campos } : x)) });
+            return (
+              <View key={e.id} style={s.filLinha}>
+                <Pressable onPress={() => onEscolherMaterial(e.id)} style={({ pressed }) => [s.tipoBotao, { flex: 1, width: undefined }, pressed && { opacity: 0.7 }]}>
+                  <Text style={s.tipoBotaoTexto} numberOfLines={1}>{m ? m.nome : 'Acessório'}</Text>
+                  <Ionicons name="chevron-down" size={13} color={C.suave} />
+                </Pressable>
+                <View style={{ width: 118 }}>
+                  <Quantidade valor={q} onMudar={(v) => mudarExt({ qtd: String(v) })} />
+                </View>
+                <Pressable onPress={() => onChange({ ext: extDoItem(it).filter((x) => x.id !== e.id) })} hitSlop={8} style={s.filTirarCurto}>
+                  <Ionicons name="close" size={16} color={C.fraco} />
+                </Pressable>
+              </View>
+            );
+          })}
+          <View style={s.maisLinha}>
+            <Pressable onPress={() => onChange({ fil: [...fil, novoFil(tiposDe(cfg)[0].id)] })} style={s.filMais} hitSlop={6}>
+              <Ionicons name="add-circle" size={16} color={C.ciano} />
+              <Text style={s.filMaisTexto}>Outro filamento</Text>
+            </Pressable>
+            <Pressable onPress={onAdicionarMaterial} style={s.filMais} hitSlop={6}>
+              <Ionicons name="add-circle" size={16} color={C.ciano} />
+              <Text style={s.filMaisTexto}>Acessório</Text>
+            </Pressable>
+          </View>
+          <View style={[s.campos, { marginTop: 10 }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.campoRotulo}>Quantidade</Text>
+              <Quantidade valor={k.qtd} onMudar={(q) => onChange({ qtd: String(q) })} />
+            </View>
+            <Campo rotulo="Mão de obra (cada)" digitos={it.maoD || ''} onDigitos={(d) => onChange({ maoD: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" />
+          </View>
         </>
       ) : null}
 
       <View style={s.itemRodape}>
         <IconeBotao nome="share-social" cor={ok ? C.ciano : C.fraco} onPress={ok ? onCompartilhar : undefined} />
-        <IconeBotao nome="bookmark" cor={ok ? C.laranja : C.fraco} onPress={ok ? onSalvar : undefined} />
+        <IconeBotao nome={salvo ? 'bookmark' : 'bookmark-outline'} cor={ok ? C.laranja : C.fraco} onPress={ok ? onSalvar : undefined} />
         <View style={{ flex: 1 }} />
         <ConfirmarApagar soIcone onConfirmar={onRemove} />
       </View>
@@ -1012,7 +1187,10 @@ function PecaSalva({ p, modo, onCompartilhar, onFoto, onUsar, onApagar }) {
         <Miniatura foto={p.foto} onPress={onFoto} />
         <View style={{ flex: 1 }}>
           <Text style={s.itemNome} numberOfLines={1}>{p.nome}</Text>
-          <Text style={s.itemPreco}>{reais(p.preco)}</Text>
+          <Text style={s.itemPreco}>
+            {reais(p.preco)}
+            {(p.qtd || 1) > 1 ? <Text style={s.itemConfira}>{`  ${p.qtd} × ${reais(p.unidade)}`}</Text> : null}
+          </Text>
           <Text style={s.itemDetalhe}>
             {gramasTexto(p.g)}{nomesDosTipos(p.fil) ? ` ${nomesDosTipos(p.fil)}` : ''} · {tempoTexto(p.min, modo)} · {dataTexto(p.data)}
           </Text>
@@ -1028,7 +1206,52 @@ function PecaSalva({ p, modo, onCompartilhar, onFoto, onUsar, onApagar }) {
   );
 }
 
-function OrcamentoSalvo({ o, onPdf, onAbrir, onApagar }) {
+// resumo do mês: quanto foi orçado e quanto virou venda
+const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+function ResumoMes({ orcs }) {
+  const hoje = new Date();
+  const [ref, setRef] = useState({ a: hoje.getFullYear(), m: hoje.getMonth() });
+  const doMes = orcs.filter((o) => {
+    const d = new Date(o.data);
+    return d.getFullYear() === ref.a && d.getMonth() === ref.m;
+  });
+  const soma = (l) => l.reduce((t, o) => t + (o.total || 0), 0);
+  const aprovados = doMes.filter((o) => o.status === 'aprovado');
+  const recusados = doMes.filter((o) => o.status === 'recusado');
+  const mudar = (d) => setRef((r) => {
+    const m = r.m + d;
+    return { a: r.a + Math.floor(m / 12), m: ((m % 12) + 12) % 12 };
+  });
+  return (
+    <View style={[s.total, { marginBottom: 2 }]}>
+      <View style={s.resumoMesTopo}>
+        <Pressable onPress={() => mudar(-1)} hitSlop={10}><Ionicons name="chevron-back" size={20} color={C.suave} /></Pressable>
+        <Text style={s.resumoMesTitulo}>{MESES[ref.m]} {ref.a}</Text>
+        <Pressable onPress={() => mudar(1)} hitSlop={10}><Ionicons name="chevron-forward" size={20} color={C.suave} /></Pressable>
+      </View>
+      <View style={s.resumoMesLinha}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.rotulo}>ORÇADO</Text>
+          <Text style={s.resumoMesValor}>{reais(soma(doMes))}</Text>
+          <Text style={s.itemDetalhe}>{doMes.length} {doMes.length === 1 ? 'orçamento' : 'orçamentos'}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[s.rotulo, { color: C.bom }]}>APROVADO</Text>
+          <Text style={[s.resumoMesValor, { color: C.bom }]}>{reais(soma(aprovados))}</Text>
+          <Text style={s.itemDetalhe}>{aprovados.length} aprovados · {recusados.length} recusados</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const STATUS = [
+  { id: 'aberto', nome: 'Aberto', cor: C.ciano },
+  { id: 'aprovado', nome: 'Aprovado', cor: C.bom },
+  { id: 'recusado', nome: 'Recusado', cor: C.erro },
+];
+
+function OrcamentoSalvo({ o, onPdf, onAbrir, onApagar, onStatus }) {
   return (
     <View style={s.item}>
       <View style={s.itemTopo}>
@@ -1036,7 +1259,10 @@ function OrcamentoSalvo({ o, onPdf, onAbrir, onApagar }) {
           <Ionicons name="document-text" size={22} color={C.laranja} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={s.itemNome} numberOfLines={1}>{o.cliente || 'Sem nome do cliente'}</Text>
+          <Text style={s.itemNome} numberOfLines={1}>
+            {o.numero ? <Text style={{ color: C.suave }}>{numeroTexto(o.numero)}  </Text> : null}
+            {o.cliente || 'Sem nome do cliente'}
+          </Text>
           <Text style={s.itemPreco}>{reais(o.total)}</Text>
           <Text style={s.itemDetalhe}>
             {o.itens.length} {o.itens.length === 1 ? 'peça' : 'peças'} · {dataTexto(o.data)}
@@ -1046,7 +1272,16 @@ function OrcamentoSalvo({ o, onPdf, onAbrir, onApagar }) {
       <View style={s.itemRodape}>
         <IconeBotao nome="share-social" cor={C.ciano} onPress={onPdf} />
         <IconeBotao nome="open" cor={C.laranja} onPress={onAbrir} />
-        <View style={{ flex: 1 }} />
+        <View style={s.statusLinha}>
+          {STATUS.map((st) => {
+            const sel = (o.status || 'aberto') === st.id;
+            return (
+              <Pressable key={st.id} onPress={() => onStatus(st.id)} hitSlop={4} style={[s.statusChip, sel && { backgroundColor: st.cor + '22', borderColor: st.cor }]}>
+                <Text style={[s.statusTexto, sel && { color: st.cor }]}>{st.nome}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
         <ConfirmarApagar soIcone onConfirmar={onApagar} />
       </View>
     </View>
@@ -1089,6 +1324,7 @@ function CompartilharImagem({ peca, modo, onFechar, onErro }) {
               {peca.foto ? <Image source={{ uri: peca.foto }} style={s.cartaoFoto} /> : null}
               <View style={s.cartaoCorpo}>
                 <Text style={s.cartaoNome}>{peca.nome}</Text>
+                {peca.ext && peca.ext.length ? <Text style={s.cartaoCada}>+ {extTexto(peca.ext)}</Text> : null}
                 <View style={s.cartaoLinha}>
                   <View style={s.cartaoDado}>
                     <Ionicons name="scale" size={16} color={C.ciano} />
@@ -1107,8 +1343,13 @@ function CompartilharImagem({ peca, modo, onFechar, onErro }) {
                   </View>
                 </View>
                 <View style={s.cartaoTotal}>
-                  <Text style={s.cartaoRotulo}>PREÇO TOTAL</Text>
+                  <Text style={s.cartaoRotulo}>{(peca.qtd || 1) > 1 ? `PREÇO TOTAL · ${peca.qtd} UNIDADES` : 'PREÇO TOTAL'}</Text>
                   <Text style={s.cartaoPreco}>{reais(peca.preco)}</Text>
+                  {(peca.qtd || 1) > 1 ? (
+                    <Text style={s.cartaoCada}>
+                      {reais(peca.unidade)} cada{peca.desconto ? `  ·  desconto ${peca.desconto.replace(/^-/, '')}` : ''}
+                    </Text>
+                  ) : null}
                 </View>
               </View>
             </View>
@@ -1134,17 +1375,19 @@ function CompartilharImagem({ peca, modo, onFechar, onErro }) {
 // ---------------------------------------------------------------------------
 function SalvarOrcamento({ visivel, total, onFechar, onGuardar }) {
   const [cliente, setCliente] = useState('');
+  const [prazo, setPrazo] = useState('');
   const [ocupado, setOcupado] = useState(false);
   useEffect(() => {
     if (visivel) {
       setCliente('');
+      setPrazo('');
       setOcupado(false);
     }
   }, [visivel]);
 
   const ir = async (enviar) => {
     setOcupado(true);
-    await onGuardar(cliente, enviar);
+    await onGuardar(cliente, enviar, prazo);
     setOcupado(false);
   };
 
@@ -1165,6 +1408,17 @@ function SalvarOrcamento({ visivel, total, onFechar, onGuardar }) {
               value={cliente}
               onChangeText={setCliente}
               placeholder="Ex.: João"
+              placeholderTextColor={C.fraco}
+              style={[s.campoInput, { textAlign: 'left' }]}
+            />
+          </View>
+          <Text style={[s.campoRotulo, { marginTop: 12 }]}>Prazo de entrega (opcional)</Text>
+          <View style={s.campoCaixa}>
+            <Ionicons name="calendar" size={16} color={C.suave} style={{ marginRight: 8 }} />
+            <TextInput
+              value={prazo}
+              onChangeText={setPrazo}
+              placeholder="Ex.: 5 dias úteis"
               placeholderTextColor={C.fraco}
               style={[s.campoInput, { textAlign: 'left' }]}
             />
@@ -1216,6 +1470,66 @@ function NovoOrcamento({ visivel, n, onFechar, onEscolher }) {
 }
 
 // ---------------------------------------------------------------------------
+// Materiais: filamentos (por grama) e outros materiais (por unidade)
+// ---------------------------------------------------------------------------
+function Materiais({ cfg, setCfg }) {
+  const fil = tiposDe(cfg);
+  const outros = outrosDe(cfg);
+  const mudar = (lista, id, campos) =>
+    setCfg((c) => ({ ...c, [lista]: (lista === 'filamentos' ? tiposDe(c) : outrosDe(c)).map((t) => (t.id === id ? { ...t, ...campos } : t)) }));
+  const tirar = (lista, id) =>
+    setCfg((c) => ({ ...c, [lista]: (lista === 'filamentos' ? tiposDe(c) : outrosDe(c)).filter((t) => t.id !== id) }));
+  const somar = (lista) =>
+    setCfg((c) => ({ ...c, [lista]: [...(lista === 'filamentos' ? tiposDe(c) : outrosDe(c)), { id: novoId(), nome: '', precoD: '' }] }));
+
+  const linha = (lista, t, podeTirar, sufixo, exemplo) => (
+    <View key={t.id} style={[s.filLinha, { marginTop: 8 }]}>
+      <View style={[s.campoCaixa, { flex: 1.3 }]}>
+        <TextInput
+          value={t.nome}
+          onChangeText={(v) => mudar(lista, t.id, { nome: v })}
+          placeholder={exemplo}
+          placeholderTextColor={C.fraco}
+          autoCapitalize={lista === 'filamentos' ? 'characters' : 'sentences'}
+          style={[s.campoInput, { textAlign: 'left', fontSize: 16 }]}
+        />
+      </View>
+      <Campo digitos={t.precoD} onDigitos={(d) => mudar(lista, t.id, { precoD: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" sufixo={sufixo} />
+      {podeTirar ? (
+        <ConfirmarApagar soIcone onConfirmar={() => tirar(lista, t.id)} />
+      ) : (
+        <View style={{ width: 34 }} />
+      )}
+    </View>
+  );
+
+  return (
+    <>
+      <View style={s.item}>
+        <Text style={s.modalTitulo}>Filamentos</Text>
+        <Text style={s.modalSub}>Preço que você cobra por grama de cada tipo.</Text>
+        {fil.map((t) => linha('filamentos', t, fil.length > 1, '/g', 'PLA, PETG...'))}
+        <Pressable onPress={() => somar('filamentos')} style={[s.filMais, { marginBottom: 8 }]} hitSlop={6}>
+          <Ionicons name="add-circle" size={16} color={C.ciano} />
+          <Text style={s.filMaisTexto}>Adicionar filamento</Text>
+        </Pressable>
+      </View>
+
+      <View style={s.item}>
+        <Text style={s.modalTitulo}>Acessórios</Text>
+        <Text style={s.modalSub}>Preço por unidade. No orçamento é só escolher o acessório e a quantidade.</Text>
+        {outros.length === 0 ? <Text style={[s.itemDetalhe, { marginTop: 10 }]}>Nenhum acessório ainda.</Text> : null}
+        {outros.map((t) => linha('outros', t, true, '/un.', 'Argola de chaveiro'))}
+        <Pressable onPress={() => somar('outros')} style={[s.filMais, { marginBottom: 8 }]} hitSlop={6}>
+          <Ionicons name="add-circle" size={16} color={C.ciano} />
+          <Text style={s.filMaisTexto}>Adicionar acessório</Text>
+        </Pressable>
+      </View>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Ajustes
 // ---------------------------------------------------------------------------
 function Ajustes({ visivel, cfg, onFechar, onSalvar }) {
@@ -1226,13 +1540,13 @@ function Ajustes({ visivel, cfg, onFechar, onSalvar }) {
     if (visivel) setR({ ...cfg, filamentos: tiposDe(cfg) });
   }, [visivel]);
 
-  const mudarTipo = (id, campos) => setR({ ...r, filamentos: r.filamentos.map((t) => (t.id === id ? { ...t, ...campos } : t)) });
+  const faixas = r.faixas || [];
+  const mudarFaixa = (id, campos) => setR({ ...r, faixas: faixas.map((f) => (f.id === id ? { ...f, ...campos } : f)) });
 
   const salvar = () => {
-    const filamentos = r.filamentos
-      .filter((t) => t.nome.trim() || t.precoD)
-      .map((t) => ({ ...t, nome: t.nome.trim() || 'Filamento' }));
-    onSalvar({ ...r, filamentos: filamentos.length ? filamentos : FIL_PADRAO, senha: String(r.senha || '').trim() });
+    const filamentos = tiposDe(cfg);
+    const faixasOk = (r.faixas || []).filter((f) => parseInt(f.min || '0', 10) > 0 && valorDecimal(f.valorD) > 0);
+    onSalvar({ ...r, filamentos: filamentos.length ? filamentos : FIL_PADRAO, faixas: faixasOk, senha: String(r.senha || '').trim() });
     onFechar();
   };
 
@@ -1249,32 +1563,56 @@ function Ajustes({ visivel, cfg, onFechar, onSalvar }) {
               <Campo rotulo="Taxa por pedido" digitos={r.taxaFixa} onDigitos={(d) => setR({ ...r, taxaFixa: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" />
             </View>
 
-            <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Filamentos</Text>
-            <Text style={s.modalSub}>Cada tipo com o seu preço por grama.</Text>
-            {(r.filamentos || []).map((t) => (
-              <View key={t.id} style={[s.filLinha, { marginTop: 8 }]}>
-                <View style={[s.campoCaixa, { flex: 1 }]}>
-                  <TextInput
-                    value={t.nome}
-                    onChangeText={(v) => mudarTipo(t.id, { nome: v })}
-                    placeholder="PLA, PETG..."
-                    placeholderTextColor={C.fraco}
-                    autoCapitalize="characters"
-                    style={[s.campoInput, { textAlign: 'left', fontSize: 16 }]}
-                  />
-                </View>
-                <Campo digitos={t.precoD} onDigitos={(d) => mudarTipo(t.id, { precoD: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo="R$" sufixo="/g" />
-                {r.filamentos.length > 1 ? (
-                  <Pressable onPress={() => setR({ ...r, filamentos: r.filamentos.filter((x) => x.id !== t.id) })} hitSlop={8} style={s.filTirar}>
-                    <Ionicons name="trash" size={17} color={C.fraco} />
-                  </Pressable>
-                ) : null}
+            <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Arredondar preço</Text>
+            <Text style={s.modalSub}>O preço de cada peça sobe sempre para o próximo valor redondo.</Text>
+            <View style={[s.segmento, { marginTop: 10 }]}>
+              {[['', 'Não'], ['10', 'R$ 0,10'], ['50', 'R$ 0,50'], ['100', 'R$ 1,00']].map(([v, t]) => (
+                <Segmento key={t} texto={t} ativo={(r.arredD || '') === v} onPress={() => setR({ ...r, arredD: v })} />
+              ))}
+            </View>
+
+            <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Margem de falha</Text>
+            <Text style={s.modalSub}>Soma uma porcentagem no filamento e nas horas, para cobrir impressão que dá errado. Deixe 0 se não quiser.</Text>
+            <View style={[s.campos, { marginTop: 8 }]}>
+              <Campo digitos={r.falhaD || ''} onDigitos={(d) => setR({ ...r, falhaD: d })} mostrar={mostrarDecimal} placeholder="0,00" sufixo="%" />
+              <View style={{ flex: 1 }} />
+            </View>
+
+            <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Desconto por quantidade</Text>
+            <Text style={s.modalSub}>Vale para cada peça: a partir de quantas unidades, quanto de desconto em cada uma.</Text>
+            {faixas.map((f) => (
+              <View key={f.id} style={[s.filLinha, { marginTop: 8 }]}>
+                <Campo digitos={f.min || ''} onDigitos={(d) => mudarFaixa(f.id, { min: d })} mostrar={(d) => d} placeholder="10" prefixo="a partir de" sufixo="un." />
+                <Campo digitos={f.valorD || ''} onDigitos={(d) => mudarFaixa(f.id, { valorD: d })} mostrar={mostrarDecimal} placeholder="0,00" prefixo={f.tipo === 'R$' ? 'R$' : undefined} sufixo={f.tipo === 'R$' ? undefined : '%'} />
+                <Pressable onPress={() => mudarFaixa(f.id, { tipo: f.tipo === 'R$' ? '%' : 'R$' })} style={s.faixaTipo}>
+                  <Text style={s.faixaTipoTexto}>{f.tipo === 'R$' ? 'R$' : '%'}</Text>
+                </Pressable>
+                <Pressable onPress={() => setR({ ...r, faixas: faixas.filter((x) => x.id !== f.id) })} hitSlop={8} style={s.filTirar}>
+                  <Ionicons name="trash" size={17} color={C.fraco} />
+                </Pressable>
               </View>
             ))}
-            <Pressable onPress={() => setR({ ...r, filamentos: [...r.filamentos, { id: novoId(), nome: '', precoD: '' }] })} style={s.filMais} hitSlop={6}>
+            <Pressable onPress={() => setR({ ...r, faixas: [...faixas, { id: novoId(), min: '', tipo: '%', valorD: '' }] })} style={s.filMais} hitSlop={6}>
               <Ionicons name="add-circle" size={16} color={C.ciano} />
-              <Text style={s.filMaisTexto}>Adicionar filamento</Text>
+              <Text style={s.filMaisTexto}>Adicionar faixa</Text>
             </Pressable>
+
+            <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Orçamentos</Text>
+            <View style={[s.campos, { marginTop: 8 }]}>
+              <Campo rotulo="Validade (vazio = não mostra)" digitos={r.validadeDias || ''} onDigitos={(d) => setR({ ...r, validadeDias: d })} mostrar={(d) => d} placeholder="0" sufixo="dias" />
+              <Campo rotulo="Próximo número" digitos={String(r.proximoNumero || 1)} onDigitos={(d) => setR({ ...r, proximoNumero: parseInt(d || '1', 10) || 1 })} mostrar={(d) => d} placeholder="1" />
+            </View>
+            <Text style={[s.campoRotulo, { marginTop: 10 }]}>Impressora (sai no PDF, vazio = não mostra)</Text>
+            <View style={s.campoCaixa}>
+              <Ionicons name="print" size={16} color={C.suave} style={{ marginRight: 8 }} />
+              <TextInput
+                value={r.impressora === undefined ? CONFIG_PADRAO.impressora : r.impressora}
+                onChangeText={(t) => setR({ ...r, impressora: t })}
+                placeholder="Ex.: Bambu Lab A1 Combo AMS"
+                placeholderTextColor={C.fraco}
+                style={[s.campoInput, { textAlign: 'left', fontSize: 16 }]}
+              />
+            </View>
 
             <Text style={[s.modalTitulo, { fontSize: 17, marginTop: 22 }]}>Formato do tempo</Text>
             <View style={[s.segmento, { marginTop: 10 }]}>
@@ -1392,10 +1730,25 @@ const s = StyleSheet.create({
   apagarTexto: { fontFamily: F.textoNegrito, color: C.erro, fontSize: 13 },
 
   campos: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  qtdBotao: { padding: 8 },
+  itemDesconto: { fontFamily: F.textoNegrito, color: C.bom, fontSize: 12 },
+  faixaTipo: { backgroundColor: C.cianoEscuro, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 11 },
+  faixaTipoTexto: { fontFamily: F.textoNegrito, color: C.ciano, fontSize: 14 },
+  statusLinha: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', gap: 4, marginRight: 4 },
+  statusChip: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, borderWidth: 1, borderColor: C.linha },
+  statusTexto: { fontFamily: F.textoForte, color: C.fraco, fontSize: 11 },
+  resumoMesTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  resumoMesTitulo: { fontFamily: F.tituloMedio, color: C.texto, fontSize: 16, textTransform: 'capitalize' },
+  resumoMesLinha: { flexDirection: 'row', gap: 12 },
+  resumoMesValor: { fontFamily: F.titulo, color: C.texto, fontSize: 22, marginTop: 2 },
+  cartaoCada: { fontFamily: F.textoForte, color: C.suave, fontSize: 12, marginTop: 2 },
   filLinha: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   tipoBotao: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4, width: 96, backgroundColor: C.cartao2, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 12, borderWidth: 1, borderColor: C.linha },
   tipoBotaoTexto: { fontFamily: F.textoNegrito, color: C.texto, fontSize: 14, flexShrink: 1 },
   filTirar: { padding: 6 },
+  maisLinha: { flexDirection: 'row', gap: 18, flexWrap: 'wrap' },
+  tipoBotaoCurto: { width: 72, paddingHorizontal: 9 },
+  filTirarCurto: { paddingVertical: 6, paddingHorizontal: 0 },
   filMais: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingVertical: 4 },
   filMaisTexto: { fontFamily: F.textoNegrito, color: C.ciano, fontSize: 13 },
   tipoOpcao: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 14, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1, borderColor: C.linha, marginBottom: 8, backgroundColor: C.cartao2 },
