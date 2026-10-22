@@ -1,0 +1,63 @@
+name: Gerar APK Preço 3D
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+
+concurrency:
+  group: gerar-apk
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Instalar dependências
+        run: npm install --legacy-peer-deps
+
+      - name: Alinhar versões ao Expo SDK
+        run: npx expo install --fix -- --legacy-peer-deps
+
+      - name: Gerar projeto Android
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Montar APK
+        working-directory: android
+        run: |
+          set +e
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a > ../build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            grep -nE "^e: |error:|Error:|FAILED|What went wrong|Caused by|Could not|Unresolved|wrong" ../build.log | head -25 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          fi
+          exit $code
+
+      - name: Publicar versão
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk Preco3D.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest Preco3D.apk --title "Preço 3D" --notes "Calculadora de preço de impressão 3D" --target "$GITHUB_SHA"

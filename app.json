@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Preço 3D",
+    "slug": "preco-3d",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0B0C",
+    "icon": "./assets/icon.png",
+    "android": {
+      "package": "dev.panissa.preco3d",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B0B0C"
+      },
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "O app usa suas fotos para ler o tempo e os gramas da impressão.",
+          "cameraPermission": "O app usa a câmera para fotografar a tela do fatiador ou da impressora."
+        }
+      ]
+    ]
+  }
+}

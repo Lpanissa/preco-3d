@@ -1,0 +1,17 @@
+{
+  "name": "preco-3d",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "expo": "~54.0.0",
+    "expo-status-bar": "*",
+    "expo-image-picker": "*",
+    "expo-image-manipulator": "*",
+    "expo-clipboard": "*",
+    "@expo/vector-icons": "*",
+    "@react-native-async-storage/async-storage": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}
