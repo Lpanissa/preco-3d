@@ -1523,6 +1523,18 @@ function Materiais({ cfg, setCfg }) {
   const outros = outrosDe(cfg);
   const rolos = rolosDe(cfg);
   const [escolher, setEscolher] = useState(null); // rolo que está escolhendo o tipo
+  // blocos fechados ficam guardados (continuam fechados quando abrir o app de novo)
+  const fechados = cfg.blocosFechados || {};
+  const alternar = (b) => setCfg((c) => ({ ...c, blocosFechados: { ...(c.blocosFechados || {}), [b]: !(c.blocosFechados || {})[b] } }));
+  const Titulo = ({ id, texto, resumo }) => (
+    <Pressable onPress={() => alternar(id)} style={s.blocoTopo} hitSlop={6}>
+      <View style={{ flex: 1 }}>
+        <Text style={s.modalTitulo}>{texto}</Text>
+        {fechados[id] ? <Text style={s.itemDetalhe}>{resumo}</Text> : null}
+      </View>
+      <Ionicons name={fechados[id] ? 'chevron-down' : 'chevron-up'} size={22} color={C.suave} />
+    </Pressable>
+  );
   const mudarRolo = (id, campos) => setCfg((c) => ({ ...c, rolos: rolosDe(c).map((r) => (r.id === id ? { ...r, ...campos } : r)) }));
   const mudar = (lista, id, campos) =>
     setCfg((c) => ({ ...c, [lista]: (lista === 'filamentos' ? tiposDe(c) : outrosDe(c)).map((t) => (t.id === id ? { ...t, ...campos } : t)) }));
@@ -1555,17 +1567,23 @@ function Materiais({ cfg, setCfg }) {
   return (
     <>
       <View style={s.item}>
-        <Text style={s.modalTitulo}>Filamentos</Text>
-        <Text style={s.modalSub}>Preço padrão por grama de cada tipo (usado quando a peça não tem rolo do estoque).</Text>
-        {fil.map((t) => linha('filamentos', t, fil.length > 1, '/g', 'PLA, PETG...'))}
-        <Pressable onPress={() => somar('filamentos')} style={[s.filMais, { marginBottom: 8 }]} hitSlop={6}>
-          <Ionicons name="add-circle" size={16} color={C.ciano} />
-          <Text style={s.filMaisTexto}>Adicionar filamento</Text>
-        </Pressable>
+        <Titulo id="filamentos" texto="Filamentos" resumo={fil.map((t) => t.nome).filter(Boolean).join(', ')} />
+        {fechados.filamentos ? <View style={{ height: 8 }} /> : (
+          <>
+            <Text style={s.modalSub}>Preço padrão por grama de cada tipo (usado quando a peça não tem rolo do estoque).</Text>
+            {fil.map((t) => linha('filamentos', t, fil.length > 1, '/g', 'PLA, PETG...'))}
+            <Pressable onPress={() => somar('filamentos')} style={[s.filMais, { marginBottom: 8 }]} hitSlop={6}>
+              <Ionicons name="add-circle" size={16} color={C.ciano} />
+              <Text style={s.filMaisTexto}>Adicionar filamento</Text>
+            </Pressable>
+          </>
+        )}
       </View>
 
       <View style={s.item}>
-        <Text style={s.modalTitulo}>Estoque de filamento</Text>
+        <Titulo id="estoque" texto="Estoque de filamento" resumo={`${rolos.length} ${rolos.length === 1 ? 'rolo' : 'rolos'}`} />
+        {fechados.estoque ? <View style={{ height: 8 }} /> : (
+        <>
         <Text style={s.modalSub}>Cada rolo com a cor e o preço que você pagou. Na leitura da foto o app escolhe o rolo pela cor e usa o preço dele.</Text>
         {rolos.length === 0 ? <Text style={[s.itemDetalhe, { marginTop: 10 }]}>Nenhum rolo ainda.</Text> : null}
         {rolos.map((r) => (
@@ -1603,6 +1621,8 @@ function Materiais({ cfg, setCfg }) {
           <Ionicons name="add-circle" size={16} color={C.ciano} />
           <Text style={s.filMaisTexto}>Adicionar rolo</Text>
         </Pressable>
+        </>
+        )}
       </View>
 
       <EscolherTipo
@@ -1619,14 +1639,18 @@ function Materiais({ cfg, setCfg }) {
       />
 
       <View style={s.item}>
-        <Text style={s.modalTitulo}>Acessórios</Text>
-        <Text style={s.modalSub}>Preço por unidade. No orçamento é só escolher o acessório e a quantidade.</Text>
-        {outros.length === 0 ? <Text style={[s.itemDetalhe, { marginTop: 10 }]}>Nenhum acessório ainda.</Text> : null}
-        {outros.map((t) => linha('outros', t, true, '/un.', 'Argola de chaveiro'))}
-        <Pressable onPress={() => somar('outros')} style={[s.filMais, { marginBottom: 8 }]} hitSlop={6}>
-          <Ionicons name="add-circle" size={16} color={C.ciano} />
-          <Text style={s.filMaisTexto}>Adicionar acessório</Text>
-        </Pressable>
+        <Titulo id="acessorios" texto="Acessórios" resumo={`${outros.length} ${outros.length === 1 ? 'acessório' : 'acessórios'}`} />
+        {fechados.acessorios ? <View style={{ height: 8 }} /> : (
+          <>
+            <Text style={s.modalSub}>Preço por unidade. No orçamento é só escolher o acessório e a quantidade.</Text>
+            {outros.length === 0 ? <Text style={[s.itemDetalhe, { marginTop: 10 }]}>Nenhum acessório ainda.</Text> : null}
+            {outros.map((t) => linha('outros', t, true, '/un.', 'Argola de chaveiro'))}
+            <Pressable onPress={() => somar('outros')} style={[s.filMais, { marginBottom: 8 }]} hitSlop={6}>
+              <Ionicons name="add-circle" size={16} color={C.ciano} />
+              <Text style={s.filMaisTexto}>Adicionar acessório</Text>
+            </Pressable>
+          </>
+        )}
       </View>
     </>
   );
@@ -1850,6 +1874,7 @@ const s = StyleSheet.create({
   tipoBotaoTexto: { fontFamily: F.textoNegrito, color: C.texto, fontSize: 14, flexShrink: 1 },
   filTirar: { padding: 6 },
   rolo: { borderTopWidth: 1, borderTopColor: C.linha, paddingTop: 10, marginTop: 10 },
+  blocoTopo: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   roloGrama: { fontFamily: F.textoNegrito, color: C.ciano, fontSize: 13 },
   maisLinha: { flexDirection: 'row', gap: 18, flexWrap: 'wrap' },
   tipoBotaoCurto: { width: 84, paddingHorizontal: 9 },

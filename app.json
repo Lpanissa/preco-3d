@@ -2,7 +2,7 @@
   "expo": {
     "name": "Preço 3D",
     "slug": "preco-3d",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#070b12",
