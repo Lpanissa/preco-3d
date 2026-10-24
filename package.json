@@ -1,11 +1,12 @@
 {
   "name": "preco-3d",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "private": true,
   "main": "index.js",
   "dependencies": {
     "expo": "~54.0.0",
     "expo-status-bar": "*",
+    "expo-splash-screen": "*",
     "expo-modules-core": "*",
     "expo-image-picker": "*",
     "expo-image-manipulator": "*",

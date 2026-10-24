@@ -2,7 +2,7 @@
   "expo": {
     "name": "Preço 3D",
     "slug": "preco-3d",
-    "version": "1.4.1",
+    "version": "1.5.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#070b12",
@@ -22,7 +22,21 @@
           "photosPermission": "O app usa suas fotos para ler o tempo e os gramas da impressão.",
           "cameraPermission": "O app usa a câmera para fotografar a tela do fatiador ou da impressora."
         }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain",
+          "backgroundColor": "#070b12"
+        }
       ]
-    ]
+    ],
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#070b12"
+    }
   }
 }

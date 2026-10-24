@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   AppState,
   Image,
   Keyboard,
@@ -15,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -54,6 +57,9 @@ import build from './build.json';
 
 const LOGO = require('./assets/logo.png');
 const ATUALIZADOR = requireOptionalNativeModule('PrecoUpdate');
+
+// segura a tela de abertura do Android (fundo escuro com o logo) até a abertura animada assumir
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 // ---------------------------------------------------------------------------
 // Dados guardados
@@ -617,16 +623,12 @@ export default function App() {
   const algumModal = ajustes || salvarOrc || !!alvoFoto || !!cartao || novoOrc || !!escolhaTipo;
   const rolagem = useRolarParaCampo(!algumModal);
 
-  if (!carregado || !fontes) {
-    return (
-      <View style={[s.tela, s.centro]}>
-        <ActivityIndicator color={C.ciano} />
-      </View>
-    );
-  }
+  const pronto0 = carregado && !!fontes;
 
   return (
-    <View style={s.tela}>
+    <View style={s.tela} onLayout={() => SplashScreen.hideAsync().catch(() => {})}>
+      {pronto0 ? (
+      <>
       <StatusBar style="light" />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         {/* topo */}
@@ -835,7 +837,90 @@ export default function App() {
         onFechar={() => setEscolhaTipo(null)}
       />
       <NovoOrcamento visivel={novoOrc} n={itens.length} onFechar={() => setNovoOrc(false)} onEscolher={comecarNovo} />
+      </>
+      ) : null}
+      <Abertura pronto={pronto0} fontes={!!fontes} />
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Abertura: o bico imprime o cubo camada por camada (vai e volta enquanto o cubo cresce
+// de baixo para cima), para no lugar dele no logo, e o nome em degradê sobe
+// ---------------------------------------------------------------------------
+const AB = 176; // tamanho do logo na abertura
+const AB_ESC = AB / 512; // as medidas abaixo são na imagem de 512 px
+const AB_BASE = 490; // fundo do cubo
+const AB_TOPO = 60; // topo do cubo
+const AB_PONTA = 172; // ponta do bico na posição final
+function Abertura({ pronto, fontes }) {
+  const imp = useRef(new Animated.Value(0)).current; // 0 = nada impresso, 1 = cubo pronto
+  const vai = useRef(new Animated.Value(0)).current; // vai e volta do bico (-1 a 1)
+  const nome = useRef(new Animated.Value(0)).current;
+  const sair = useRef(new Animated.Value(1)).current;
+  const [animou, setAnimou] = useState(false);
+  const [fim, setFim] = useState(false);
+
+  useEffect(() => {
+    const passo = (v) => Animated.timing(vai, { toValue: v, duration: 190, easing: Easing.inOut(Easing.quad), useNativeDriver: true });
+    Animated.sequence([
+      Animated.parallel([
+        Animated.timing(imp, { toValue: 1, duration: 1700, easing: Easing.linear, useNativeDriver: false }),
+        Animated.sequence([Animated.loop(Animated.sequence([passo(1), passo(-1)]), { iterations: 4 }), passo(0)]),
+      ]),
+      Animated.timing(nome, { toValue: 1, duration: 420, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+    ]).start(() => setAnimou(true));
+  }, []);
+
+  useEffect(() => {
+    if (!animou || !pronto) return;
+    Animated.timing(sair, { toValue: 0, duration: 350, delay: 150, useNativeDriver: true }).start(() => setFim(true));
+  }, [animou, pronto]);
+
+  if (fim) return null;
+  const ondeFica = (AB_BASE - AB_PONTA) / (AB_BASE - AB_TOPO); // momento em que o bico chega na posição final
+  return (
+    <Animated.View pointerEvents={pronto && animou ? 'none' : 'auto'} style={[StyleSheet.absoluteFill, s.abertura, { opacity: sair }]}>
+      <View style={{ width: AB, height: AB, marginBottom: 18 }}>
+        {/* cubo aparecendo de baixo para cima */}
+        <Animated.View
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            overflow: 'hidden',
+            height: imp.interpolate({ inputRange: [0, 1], outputRange: [(512 - AB_BASE) * AB_ESC, AB] }),
+          }}
+        >
+          <Image source={require('./assets/abertura-cubo.png')} style={{ position: 'absolute', bottom: 0, width: AB, height: AB }} />
+        </Animated.View>
+        {/* bico em cima da camada que está sendo impressa */}
+        <Animated.Image
+          source={require('./assets/abertura-bico.png')}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: AB,
+            height: AB,
+            transform: [
+              { translateX: vai.interpolate({ inputRange: [-1, 1], outputRange: [-AB * 0.24, AB * 0.24] }) },
+              { translateY: imp.interpolate({ inputRange: [0, ondeFica, 1], outputRange: [(AB_BASE - AB_PONTA) * AB_ESC, 0, 0] }) },
+            ],
+          }}
+        />
+      </View>
+      <Animated.View style={{ alignItems: 'center', opacity: nome, transform: [{ translateY: nome.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }] }}>
+        {fontes ? <Marca tamanho={32} /> : <Text style={[s.aberturaNome]}>MATERIALIZZA</Text>}
+        <Text style={s.aberturaSlogan}>LAYER BY LAYER</Text>
+      </Animated.View>
+      <View style={s.aberturaTrilho}>
+        <Animated.View style={{ height: 3, width: imp.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }), overflow: 'hidden' }}>
+          <LinearGradient colors={[C.ciano, C.laranja]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ width: 180, height: 3 }} />
+        </Animated.View>
+      </View>
+    </Animated.View>
   );
 }
 
@@ -1785,6 +1870,11 @@ function Ajustes({ visivel, cfg, onFechar, onSalvar }) {
 // ---------------------------------------------------------------------------
 const s = StyleSheet.create({
   tela: { flex: 1, backgroundColor: C.fundo },
+  abertura: { backgroundColor: C.fundo, alignItems: 'center', justifyContent: 'center' },
+  aberturaLogo: { width: 168, height: 168, marginBottom: 18 },
+  aberturaNome: { color: C.ciano, fontSize: 30, fontWeight: '800', letterSpacing: 1 },
+  aberturaSlogan: { color: C.suave, fontSize: 12, letterSpacing: 4, marginTop: 8, fontWeight: '600' },
+  aberturaTrilho: { width: 180, height: 3, borderRadius: 2, backgroundColor: C.cartao2, marginTop: 28, overflow: 'hidden' },
   centro: { alignItems: 'center', justifyContent: 'center' },
   conteudo: { padding: 16, paddingTop: 6, paddingBottom: 110 },
   fab: { position: 'absolute', right: 20, bottom: 28, width: 60, height: 60, borderRadius: 30, elevation: 8 },
