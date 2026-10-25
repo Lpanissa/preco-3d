@@ -33,6 +33,7 @@ import { useFonts, ChakraPetch_600SemiBold, ChakraPetch_700Bold } from '@expo-go
 import { Barlow_400Regular, Barlow_500Medium, Barlow_600SemiBold, Barlow_700Bold } from '@expo-google-fonts/barlow';
 
 import { C, F } from './src/tema';
+import Criar3D from './src/criar3d';
 import {
   soDigitos,
   mostrarDecimal,
@@ -671,6 +672,7 @@ export default function App() {
           <Aba texto="Calcular" ativa={aba === 'calcular'} onPress={() => setAba('calcular')} />
           <Aba texto={`Salvos${pecas.length + orcs.length ? ` (${pecas.length + orcs.length})` : ''}`} ativa={aba === 'salvos'} onPress={() => setAba('salvos')} />
           <Aba texto="Materiais" ativa={aba === 'materiais'} onPress={() => setAba('materiais')} />
+          <Aba texto="Criar 3D" ativa={aba === 'criar3d'} onPress={() => setAba('criar3d')} />
         </View>
 
         <ScrollView
@@ -680,7 +682,9 @@ export default function App() {
           contentContainerStyle={s.conteudo}
           keyboardShouldPersistTaps="handled"
         >
-          {aba === 'materiais' ? (
+          {aba === 'criar3d' ? (
+            <Criar3D senha={cfg.senha} aviso={mostrarAviso} />
+          ) : aba === 'materiais' ? (
             <Materiais cfg={cfg} setCfg={setCfg} />
           ) : aba === 'calcular' ? (
             <>
@@ -1891,7 +1895,7 @@ const s = StyleSheet.create({
   atualizacaoSub: { fontFamily: F.textoMedio, color: '#3a2414', fontSize: 12 },
   versao: { fontFamily: F.texto, color: C.fraco, fontSize: 12, textAlign: 'center', marginTop: 14 },
   abas: { flexDirection: 'row', marginHorizontal: 16, marginBottom: 10, borderBottomWidth: 1, borderBottomColor: C.linha },
-  aba: { paddingVertical: 10, marginRight: 22, borderBottomWidth: 2, borderBottomColor: 'transparent', marginBottom: -1 },
+  aba: { paddingVertical: 10, marginRight: 18, borderBottomWidth: 2, borderBottomColor: 'transparent', marginBottom: -1 },
   abaAtiva: { borderBottomColor: C.ciano },
   abaTexto: { fontFamily: F.tituloMedio, color: C.fraco, fontSize: 15, letterSpacing: 0.5 },
 
