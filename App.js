@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   AppState,
@@ -69,6 +70,7 @@ const K_CONFIG = 'preco3d-config-v2';
 const K_ITENS = 'preco3d-itens-v2';
 const K_PECAS = 'preco3d-pecas';
 const K_ORCS = 'preco3d-orcamentos';
+const K_HIST = 'preco3d-historico';
 const PASTA_FOTOS = FileSystem.documentDirectory + 'fotos/';
 
 // tipos de filamento, cada um com seu preço por grama (R$ 0,26 = '26')
@@ -251,6 +253,7 @@ export default function App() {
   const [itens, setItens] = useState([]);
   const [pecas, setPecas] = useState([]);
   const [orcs, setOrcs] = useState([]);
+  const [hist, setHist] = useState([]); // histórico de cálculos (aba Calcular)
   const [carregado, setCarregado] = useState(false);
 
   const [aba, setAba] = useState('calcular');
@@ -258,10 +261,11 @@ export default function App() {
   const [ajustes, setAjustes] = useState(false);
   const [cartao, setCartao] = useState(null); // peça a compartilhar como imagem
   const [salvarOrc, setSalvarOrc] = useState(false);
-  const [novoOrc, setNovoOrc] = useState(false);
+  const [modalCalc, setModalCalc] = useState(false); // modal do + com o cálculo em andamento
+  const [editandoId, setEditandoId] = useState(null); // cálculo do histórico sendo editado
+  const [orcDe, setOrcDe] = useState(null); // cálculo do histórico que vira orçamento
   const [alvoFoto, setAlvoFoto] = useState(null); // { tipo: 'item' | 'peca', id, modo: 'ver' | 'escolher' }
   const [escolhaTipo, setEscolhaTipo] = useState(null); // { itemId, filId }
-  const limparDepoisDeSalvar = useRef(false);
   const [aviso, setAviso] = useState('');
   const [novaVersao, setNovaVersao] = useState(false);
   const [atualizando, setAtualizando] = useState('');
@@ -273,12 +277,14 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [a, b, c, d] = await Promise.all([
+        const [a, b, c, d, h] = await Promise.all([
           AsyncStorage.getItem(K_CONFIG),
           AsyncStorage.getItem(K_ITENS),
           AsyncStorage.getItem(K_PECAS),
           AsyncStorage.getItem(K_ORCS),
+          AsyncStorage.getItem(K_HIST),
         ]);
+        if (h) setHist(JSON.parse(h));
         let conf = CONFIG_PADRAO;
         if (a) conf = { ...CONFIG_PADRAO, ...JSON.parse(a) };
         else {
@@ -322,6 +328,9 @@ export default function App() {
   useEffect(() => {
     if (carregado) AsyncStorage.setItem(K_ORCS, JSON.stringify(orcs)).catch(() => {});
   }, [orcs, carregado]);
+  useEffect(() => {
+    if (carregado) AsyncStorage.setItem(K_HIST, JSON.stringify(hist)).catch(() => {});
+  }, [hist, carregado]);
 
   // apaga fotos que não são mais usadas em lugar nenhum
   useEffect(() => {
@@ -332,6 +341,7 @@ export default function App() {
         itens.forEach((i) => i.foto && usadas.add(i.foto));
         pecas.forEach((p) => p.foto && usadas.add(p.foto));
         orcs.forEach((o) => o.itens.forEach((i) => i.foto && usadas.add(i.foto)));
+        hist.forEach((h) => h.itens.forEach((i) => i.foto && usadas.add(i.foto)));
         const arquivos = await FileSystem.readDirectoryAsync(PASTA_FOTOS);
         for (const f of arquivos) {
           if (!usadas.has(PASTA_FOTOS + f)) FileSystem.deleteAsync(PASTA_FOTOS + f, { idempotent: true }).catch(() => {});
@@ -532,24 +542,23 @@ export default function App() {
       ...l,
       { id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), ext: extDeSnapshot(p, cfg), qtd: String(p.qtd || 1), maoD: digitosDecimal(p.mao || 0), estado: 'ok', erro: '' },
     ]);
-    setAba('calcular');
+    setModalCalc(true);
     mostrarAviso('Peça adicionada ao cálculo');
   };
 
+  // orçamento a partir do cálculo aberto no modal, ou de um cálculo do histórico
   const guardarOrcamento = async (cliente, enviar, prazo) => {
-    const lista = itens.filter(pronto).map((it) => fotoDe(it));
+    const lista = orcDe ? orcDe.itens : itens.filter(pronto).map((it) => fotoDe(it));
     const numero = cfg.proximoNumero || orcs.reduce((m, o) => Math.max(m, o.numero || 0), 0) + 1;
     const orc = {
       id: novoId(), numero, status: 'aberto', cliente: cliente.trim(), prazo: (prazo || '').trim(),
-      validade: parseInt(cfg.validadeDias || '0', 10) || 0, data: Date.now(), itens: lista, taxa: total.taxa, total: total.preco,
+      validade: parseInt(cfg.validadeDias || '0', 10) || 0, data: Date.now(), itens: lista,
+      taxa: orcDe ? orcDe.taxa : total.taxa, total: orcDe ? orcDe.total : total.preco,
     };
     setCfg((c) => ({ ...c, proximoNumero: numero + 1 }));
     setOrcs((l) => [orc, ...l]);
     setSalvarOrc(false);
-    if (limparDepoisDeSalvar.current) {
-      limparDepoisDeSalvar.current = false;
-      setItens([]);
-    }
+    setOrcDe(null);
     if (enviar) await enviarPdf(orc);
     else mostrarAviso('Orçamento salvo');
   };
@@ -563,29 +572,53 @@ export default function App() {
     }
   };
 
-  const abrirOrcamento = (o) => {
-    setItens(
-      o.itens.map((p) => ({ id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), ext: extDeSnapshot(p, cfg), qtd: String(p.qtd || 1), maoD: digitosDecimal(p.mao || 0), estado: 'ok', erro: '' }))
-    );
-    setAba('calcular');
-    mostrarAviso('Orçamento aberto no cálculo');
+  const itensDeSnapshots = (lista) =>
+    lista.map((p) => ({ id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), ext: extDeSnapshot(p, cfg), qtd: String(p.qtd || 1), maoD: digitosDecimal(p.mao || 0), estado: 'ok', erro: '' }));
+
+  // troca o que está no modal; se já tinha peças lá, pergunta antes de descartar
+  const carregarNoModal = (lista, editId, aviso) => {
+    const fazer = () => {
+      setItens(itensDeSnapshots(lista));
+      setEditandoId(editId);
+      setModalCalc(true);
+      if (aviso) mostrarAviso(aviso);
+    };
+    if (itens.length && editandoId !== editId) {
+      Alert.alert('Trocar o cálculo?', `O cálculo em andamento tem ${itens.length} ${itens.length === 1 ? 'peça' : 'peças'} e não foi salvo. Ele vai ser descartado.`, [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Trocar', style: 'destructive', onPress: fazer },
+      ]);
+    } else fazer();
   };
 
-  // botão + : começa um orçamento do zero
-  const tocarNovo = () => {
-    setAba('calcular');
-    if (!itens.length) return mostrarAviso('Pronto para um orçamento novo');
-    setNovoOrc(true);
+  const abrirOrcamento = (o) => carregarNoModal(o.itens, null, 'Orçamento aberto no cálculo');
+  const editarCalculo = (h) => carregarNoModal(h.itens, h.id, '');
+
+  // botão + : abre o cálculo em andamento (ou um vazio)
+  const tocarNovo = () => setModalCalc(true);
+
+  // guarda o cálculo do modal no histórico (ou atualiza o que está sendo editado)
+  const salvarNoHistorico = () => {
+    if (lendo) return mostrarAviso('Espere terminar de ler as fotos');
+    const lista = itens.filter(pronto).map((it) => fotoDe(it));
+    if (!lista.length) return mostrarAviso('Coloque pelo menos uma peça');
+    const resto = lista.length - 1;
+    const nome = lista[0].nome + (resto ? ` + ${resto} ${resto === 1 ? 'peça' : 'peças'}` : '');
+    const velho = editandoId ? hist.find((h) => h.id === editandoId) : null;
+    const calc = {
+      id: velho ? velho.id : novoId(), nome, data: velho ? velho.data : Date.now(), editado: velho ? Date.now() : null,
+      itens: lista, taxa: total.taxa, total: total.preco, min: total.min, g: total.g, n: total.n,
+    };
+    setHist((l) => (velho ? l.map((h) => (h.id === velho.id ? calc : h)) : [calc, ...l]));
+    setItens([]);
+    setEditandoId(null);
+    setModalCalc(false);
+    mostrarAviso(velho ? 'Cálculo atualizado' : 'Cálculo salvo no histórico');
   };
-  const comecarNovo = (salvarAntes) => {
-    setNovoOrc(false);
-    if (salvarAntes) {
-      limparDepoisDeSalvar.current = true;
-      setSalvarOrc(true);
-    } else {
-      setItens([]);
-      mostrarAviso('Orçamento novo');
-    }
+
+  const copiarCalculo = async (h) => {
+    await Clipboard.setStringAsync(reais(h.total));
+    mostrarAviso('Valor copiado');
   };
 
   const escolherTipo = (tipoId) => {
@@ -602,6 +635,7 @@ export default function App() {
   const adicionarMaterial = (it) => {
     if (!outrosDe(cfg).length) {
       mostrarAviso('Cadastre seus acessórios na aba Materiais');
+      setModalCalc(false);
       setAba('materiais');
       return;
     }
@@ -621,8 +655,10 @@ export default function App() {
     setCfg(novo);
   };
 
-  const algumModal = ajustes || salvarOrc || !!alvoFoto || !!cartao || novoOrc || !!escolhaTipo;
-  const rolagem = useRolarParaCampo(!algumModal);
+  const outroModal = ajustes || salvarOrc || !!alvoFoto || !!cartao || !!escolhaTipo;
+  const rolagem = useRolarParaCampo(!outroModal && !modalCalc);
+  const rolagemCalc = useRolarParaCampo(modalCalc && !outroModal);
+  const histOrdem = useMemo(() => [...hist].sort((a, b) => b.data - a.data), [hist]);
 
   const pronto0 = carregado && !!fontes;
 
@@ -687,6 +723,98 @@ export default function App() {
           ) : aba === 'materiais' ? (
             <Materiais cfg={cfg} setCfg={setCfg} />
           ) : aba === 'calcular' ? (
+            histOrdem.length === 0 ? (
+              <Vazio
+                icone="calculator-outline"
+                titulo="Nenhum cálculo ainda"
+                texto="Toque no + para lançar as peças. Quando salvar, o cálculo aparece aqui no histórico."
+              />
+            ) : (
+              histOrdem.map((h, i) => {
+                const dia = diaRotulo(h.data);
+                const novoDia = i === 0 || diaRotulo(histOrdem[i - 1].data) !== dia;
+                return (
+                  <View key={h.id}>
+                    {novoDia ? <Text style={[s.rotulo, s.histDia]}>{dia}</Text> : null}
+                    <CalculoSalvo
+                      h={h}
+                      modo={cfg.modoHora}
+                      editando={editandoId === h.id}
+                      onPdf={() => {
+                        setOrcDe(h);
+                        setSalvarOrc(true);
+                      }}
+                      onCopiar={() => copiarCalculo(h)}
+                      onEditar={() => editarCalculo(h)}
+                      onApagar={() => {
+                        setHist((l) => l.filter((x) => x.id !== h.id));
+                        if (editandoId === h.id) setEditandoId(null);
+                      }}
+                    />
+                  </View>
+                );
+              })
+            )
+          ) : (
+            <>
+              <View style={s.segmento}>
+                <Segmento texto={`Peças (${pecas.length})`} ativo={subAba === 'pecas'} onPress={() => setSubAba('pecas')} />
+                <Segmento texto={`Orçamentos (${orcs.length})`} ativo={subAba === 'orcamentos'} onPress={() => setSubAba('orcamentos')} />
+              </View>
+
+              {subAba === 'pecas' ? (
+                pecas.length === 0 ? (
+                  <Vazio icone="bookmark-outline" titulo="Nenhuma peça salva" texto="No cálculo, toque no marcador de uma peça para guardar ela aqui." />
+                ) : (
+                  pecas.map((p) => (
+                    <PecaSalva
+                      key={p.id}
+                      p={p}
+                      modo={cfg.modoHora}
+                      onCompartilhar={() => setCartao(p)}
+                      onFoto={() => tocarFoto('peca', p)}
+                      onUsar={() => usarPeca(p)}
+                      onApagar={() => setPecas((l) => l.filter((x) => x.id !== p.id))}
+                    />
+                  ))
+                )
+              ) : orcs.length === 0 ? (
+                <Vazio icone="document-text-outline" titulo="Nenhum orçamento salvo" texto="No histórico, abra um cálculo e toque em Orçamento PDF para salvar e enviar para o cliente." />
+              ) : (
+                [<ResumoMes key="resumo" orcs={orcs} />].concat(orcs.map((o) => (
+                  <OrcamentoSalvo
+                    key={o.id}
+                    o={o}
+                    onPdf={() => enviarPdf(o)}
+                    onAbrir={() => abrirOrcamento(o)}
+                    onApagar={() => setOrcs((l) => l.filter((x) => x.id !== o.id))}
+                    onStatus={(st) => setOrcs((l) => l.map((x) => (x.id === o.id ? { ...x, status: st } : x)))}
+                  />
+                )))
+              )}
+            </>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      {/* modal do +: o cálculo em andamento */}
+      <Modal visible={modalCalc} animationType="slide" transparent onRequestClose={() => setModalCalc(false)}>
+        <KeyboardAvoidingView style={s.modalFundo} behavior="padding">
+          <Pressable style={{ height: 34 }} onPress={() => setModalCalc(false)} />
+          <View style={s.calcFolha}>
+            <View style={s.calcTopo}>
+              <Text style={s.modalTitulo}>{editandoId ? 'Editar cálculo' : 'Novo cálculo'}</Text>
+              <Pressable onPress={() => setModalCalc(false)} hitSlop={12} style={s.botaoIcone}>
+                <Ionicons name="close" size={24} color={C.suave} />
+              </Pressable>
+            </View>
+          <ScrollView
+            ref={rolagemCalc.ref}
+            onScroll={rolagemCalc.onScroll}
+            scrollEventThrottle={16}
+            contentContainerStyle={[s.conteudo, { paddingBottom: 30 }]}
+            keyboardShouldPersistTaps="handled"
+          >
             <>
               {/* total */}
               <View style={s.total}>
@@ -744,50 +872,35 @@ export default function App() {
               )}
 
               {itens.length > 0 ? (
-                <ConfirmarApagar texto="Limpar cálculo" onConfirmar={() => setItens([])} estilo={s.limpar} />
+                <ConfirmarApagar
+                  texto={editandoId ? 'Descartar alterações' : 'Limpar cálculo'}
+                  onConfirmar={() => {
+                    setItens([]);
+                    setEditandoId(null);
+                  }}
+                  estilo={s.limpar}
+                />
               ) : null}
             </>
-          ) : (
-            <>
-              <View style={s.segmento}>
-                <Segmento texto={`Peças (${pecas.length})`} ativo={subAba === 'pecas'} onPress={() => setSubAba('pecas')} />
-                <Segmento texto={`Orçamentos (${orcs.length})`} ativo={subAba === 'orcamentos'} onPress={() => setSubAba('orcamentos')} />
-              </View>
-
-              {subAba === 'pecas' ? (
-                pecas.length === 0 ? (
-                  <Vazio icone="bookmark-outline" titulo="Nenhuma peça salva" texto="No cálculo, toque no marcador de uma peça para guardar ela aqui." />
-                ) : (
-                  pecas.map((p) => (
-                    <PecaSalva
-                      key={p.id}
-                      p={p}
-                      modo={cfg.modoHora}
-                      onCompartilhar={() => setCartao(p)}
-                      onFoto={() => tocarFoto('peca', p)}
-                      onUsar={() => usarPeca(p)}
-                      onApagar={() => setPecas((l) => l.filter((x) => x.id !== p.id))}
-                    />
-                  ))
-                )
-              ) : orcs.length === 0 ? (
-                <Vazio icone="document-text-outline" titulo="Nenhum orçamento salvo" texto="No cálculo, toque em Orçamento PDF para salvar e enviar para o cliente." />
-              ) : (
-                [<ResumoMes key="resumo" orcs={orcs} />].concat(orcs.map((o) => (
-                  <OrcamentoSalvo
-                    key={o.id}
-                    o={o}
-                    onPdf={() => enviarPdf(o)}
-                    onAbrir={() => abrirOrcamento(o)}
-                    onApagar={() => setOrcs((l) => l.filter((x) => x.id !== o.id))}
-                    onStatus={(st) => setOrcs((l) => l.map((x) => (x.id === o.id ? { ...x, status: st } : x)))}
-                  />
-                )))
-              )}
-            </>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
+          </ScrollView>
+            <View style={s.calcRodape}>
+              <Pressable onPress={salvarNoHistorico} style={({ pressed }) => [s.botaoGrande, { flex: 2 }, pressed && { opacity: 0.8 }]}>
+                <Ionicons name={editandoId ? 'checkmark' : 'time'} size={18} color={C.fundo} />
+                <Text style={s.botaoGrandeTexto}>{editandoId ? 'Salvar alterações' : 'Salvar no histórico'}</Text>
+              </Pressable>
+              <Pressable onPress={copiar} disabled={!total.n} style={({ pressed }) => [s.botaoGrande, s.botaoGrandeSec, !total.n && { opacity: 0.4 }, pressed && { opacity: 0.7 }]}>
+                <Ionicons name="copy" size={18} color={C.ciano} />
+                <Text style={[s.botaoGrandeTexto, { color: C.ciano }]}>Copiar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+        {aviso ? (
+          <View style={s.aviso} pointerEvents="none">
+            <Text style={s.avisoTexto}>{aviso}</Text>
+          </View>
+        ) : null}
+      </Modal>
 
       <Pressable onPress={tocarNovo} style={({ pressed }) => [s.fab, pressed && { transform: [{ scale: 0.94 }] }]}>
         <View style={s.fabFundo}>
@@ -805,10 +918,10 @@ export default function App() {
       <CompartilharImagem peca={cartao} modo={cfg.modoHora} onFechar={() => setCartao(null)} onErro={() => mostrarAviso('Não consegui gerar a imagem.')} />
       <SalvarOrcamento
         visivel={salvarOrc}
-        total={total}
+        total={orcDe ? { n: orcDe.n, preco: orcDe.total } : total}
         onFechar={() => {
-          limparDepoisDeSalvar.current = false;
           setSalvarOrc(false);
+          setOrcDe(null);
         }}
         onGuardar={guardarOrcamento}
       />
@@ -840,7 +953,6 @@ export default function App() {
         onEscolher={escolherTipo}
         onFechar={() => setEscolhaTipo(null)}
       />
-      <NovoOrcamento visivel={novoOrc} n={itens.length} onFechar={() => setNovoOrc(false)} onEscolher={comecarNovo} />
       </>
       ) : null}
       <Abertura pronto={pronto0} fontes={!!fontes} />
@@ -1534,33 +1646,73 @@ function SalvarOrcamento({ visivel, total, onFechar, onGuardar }) {
 }
 
 // ---------------------------------------------------------------------------
-// Começar orçamento novo quando já tem peças no cálculo
+// Histórico: cada cálculo fechado; a setinha abre os detalhes
 // ---------------------------------------------------------------------------
-function NovoOrcamento({ visivel, n, onFechar, onEscolher }) {
+const diaRotulo = (ts) => {
+  const d = new Date(ts);
+  const hoje = new Date();
+  const ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
+  const igual = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (igual(d, hoje)) return 'HOJE';
+  if (igual(d, ontem)) return 'ONTEM';
+  return dataTexto(ts);
+};
+const horaTexto = (ts) => {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+function CalculoSalvo({ h, modo, editando, onPdf, onCopiar, onEditar, onApagar }) {
+  const [aberto, setAberto] = useState(false);
   return (
-    <Modal visible={visivel} animationType="slide" transparent onRequestClose={onFechar}>
-      <View style={s.modalFundo}>
-        <Pressable style={{ flex: 1 }} onPress={onFechar} />
-        <View style={s.modal}>
-          <View style={s.modalAlca} />
-          <Text style={s.modalTitulo}>Novo orçamento</Text>
-          <Text style={s.modalSub}>
-            O cálculo atual tem {n} {n === 1 ? 'peça' : 'peças'}. O que fazer com ele?
+    <View style={[s.histCartao, editando && { borderColor: C.laranja }]}>
+      <Pressable onPress={() => setAberto((a) => !a)} style={({ pressed }) => [s.histTopo, pressed && { opacity: 0.85 }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.itemNome} numberOfLines={1}>{h.nome}</Text>
+          <Text style={s.itemDetalhe}>
+            {horaTexto(h.data)} · {h.n} {h.n === 1 ? 'peça' : 'peças'}{editando ? ' · editando' : ''}
           </Text>
-          <Pressable onPress={() => onEscolher(true)} style={({ pressed }) => [s.botaoGrande, { marginTop: 20, flex: 0 }, pressed && { opacity: 0.8 }]}>
-            <Ionicons name="bookmark" size={18} color={C.fundo} />
-            <Text style={s.botaoGrandeTexto}>Salvar e começar novo</Text>
-          </Pressable>
-          <Pressable onPress={() => onEscolher(false)} style={({ pressed }) => [s.botaoGrande, s.botaoGrandeSec, { marginTop: 10, flex: 0 }, pressed && { opacity: 0.7 }]}>
-            <Ionicons name="trash" size={18} color={C.erro} />
-            <Text style={[s.botaoGrandeTexto, { color: C.erro }]}>Descartar e começar novo</Text>
-          </Pressable>
-          <Pressable onPress={onFechar} style={{ alignSelf: 'center', padding: 12, marginTop: 4 }}>
-            <Text style={[s.limparTexto, { fontSize: 14 }]}>Cancelar</Text>
-          </Pressable>
+          <View style={[s.linhaResumo, { marginTop: 8 }]}>
+            <Resumo icone="time" texto={tempoTexto(h.min, modo)} />
+            <Resumo icone="scale" texto={gramasTexto(h.g)} />
+          </View>
         </View>
-      </View>
-    </Modal>
+        <Text style={s.histTotal}>{reais(h.total)}</Text>
+        <View style={s.histSeta}>
+          <Ionicons name={aberto ? 'chevron-up' : 'chevron-down'} size={18} color={C.ciano} />
+        </View>
+      </Pressable>
+      {aberto ? (
+        <View style={s.histDetalhe}>
+          {h.itens.map((p) => (
+            <View key={p.id} style={s.histPeca}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.histPecaNome} numberOfLines={1}>
+                  {p.nome}{(p.qtd || 1) > 1 ? `  ·  ${p.qtd} un.` : ''}
+                </Text>
+                <Text style={s.itemDetalhe} numberOfLines={2}>
+                  {gramasTexto(p.g)}{nomesDosTipos(p.fil) ? ` ${nomesDosTipos(p.fil)}` : ''} · {tempoTexto(p.min, modo)}
+                  {p.ext && p.ext.length ? ` · + ${extTexto(p.ext)}` : ''}
+                </Text>
+              </View>
+              <Text style={s.histPecaPreco}>{reais(p.preco)}</Text>
+            </View>
+          ))}
+          {h.taxa ? (
+            <View style={s.histPeca}>
+              <Text style={[s.itemDetalhe, { flex: 1 }]}>Taxa fixa</Text>
+              <Text style={s.histPecaPreco}>{reais(h.taxa)}</Text>
+            </View>
+          ) : null}
+          <View style={[s.linhaBotoes, { marginTop: 12, gap: 8 }]}>
+            <Botao icone="document-text" texto="PDF" cor={C.laranja} fundo={C.laranjaEscuro} onPress={onPdf} />
+            <Botao icone="copy" texto="Copiar" cor={C.ciano} fundo={C.cianoEscuro} onPress={onCopiar} />
+            <Botao icone="create" texto="Editar" cor={C.texto} fundo={C.cartao2} onPress={onEditar} />
+          </View>
+          <ConfirmarApagar texto="Apagar do histórico" onConfirmar={onApagar} estilo={[s.limpar, { marginTop: 10 }]} />
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -1949,6 +2101,18 @@ const s = StyleSheet.create({
   avisoTexto: { fontFamily: F.textoForte, color: C.texto, textAlign: 'center', fontSize: 14 },
 
   modalFundo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' },
+  calcFolha: { flex: 1, backgroundColor: C.fundo, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderColor: C.linha, overflow: 'hidden' },
+  calcTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingTop: 16, paddingBottom: 6 },
+  calcRodape: { flexDirection: 'row', gap: 10, padding: 14, paddingBottom: 18, borderTopWidth: 1, borderTopColor: C.linha, backgroundColor: C.cartao },
+  histDia: { marginTop: 14, marginBottom: 2 },
+  histCartao: { backgroundColor: C.cartao, borderRadius: 16, marginTop: 10, borderWidth: 1, borderColor: C.linha, overflow: 'hidden' },
+  histTopo: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14 },
+  histTotal: { fontFamily: F.titulo, color: C.laranja, fontSize: 18 },
+  histSeta: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.cartao2, alignItems: 'center', justifyContent: 'center' },
+  histDetalhe: { borderTopWidth: 1, borderTopColor: C.linha, paddingHorizontal: 14, paddingTop: 6, paddingBottom: 8 },
+  histPeca: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.cartao2 },
+  histPecaNome: { fontFamily: F.textoForte, color: C.texto, fontSize: 14 },
+  histPecaPreco: { fontFamily: F.tituloMedio, color: C.texto, fontSize: 14 },
   modalCentro: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', alignItems: 'center', justifyContent: 'center', padding: 16 },
   modal: { backgroundColor: C.cartao, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 30, borderWidth: 1, borderColor: C.linha, maxHeight: '88%' },
   modalAlca: { width: 40, height: 4, borderRadius: 2, backgroundColor: C.linha, alignSelf: 'center', marginBottom: 16 },
