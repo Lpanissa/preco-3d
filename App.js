@@ -35,6 +35,7 @@ import { Barlow_400Regular, Barlow_500Medium, Barlow_600SemiBold, Barlow_700Bold
 
 import { C, F } from './src/tema';
 import Criar3D from './src/criar3d';
+import Divisor from './src/divisor';
 import {
   soDigitos,
   mostrarDecimal,
@@ -709,6 +710,7 @@ export default function App() {
           <Aba texto={`Salvos${pecas.length + orcs.length ? ` (${pecas.length + orcs.length})` : ''}`} ativa={aba === 'salvos'} onPress={() => setAba('salvos')} />
           <Aba texto="Materiais" ativa={aba === 'materiais'} onPress={() => setAba('materiais')} />
           <Aba texto="Criar 3D" ativa={aba === 'criar3d'} onPress={() => setAba('criar3d')} />
+          <Aba texto="Divisor 3D" ativa={aba === 'divisor'} onPress={() => setAba('divisor')} />
         </View>
 
         <ScrollView
@@ -718,7 +720,9 @@ export default function App() {
           contentContainerStyle={s.conteudo}
           keyboardShouldPersistTaps="handled"
         >
-          {aba === 'criar3d' ? (
+          {aba === 'divisor' ? (
+            <Divisor />
+          ) : aba === 'criar3d' ? (
             <Criar3D senha={cfg.senha} aviso={mostrarAviso} />
           ) : aba === 'materiais' ? (
             <Materiais cfg={cfg} setCfg={setCfg} />
