@@ -252,6 +252,8 @@ export default function App() {
 
   const [cfg, setCfg] = useState(CONFIG_PADRAO);
   const [itens, setItens] = useState([]);
+  const [prodNome, setProdNome] = useState(''); // título do produto pronto (opcional)
+  const [prodFoto, setProdFoto] = useState(null); // foto do produto pronto (opcional)
   const [pecas, setPecas] = useState([]);
   const [orcs, setOrcs] = useState([]);
   const [hist, setHist] = useState([]); // histórico de cálculos (aba Calcular)
@@ -343,6 +345,9 @@ export default function App() {
         pecas.forEach((p) => p.foto && usadas.add(p.foto));
         orcs.forEach((o) => o.itens.forEach((i) => i.foto && usadas.add(i.foto)));
         hist.forEach((h) => h.itens.forEach((i) => i.foto && usadas.add(i.foto)));
+        hist.forEach((h) => h.produto && h.produto.foto && usadas.add(h.produto.foto));
+        orcs.forEach((o) => o.produto && o.produto.foto && usadas.add(o.produto.foto));
+        if (prodFoto) usadas.add(prodFoto);
         const arquivos = await FileSystem.readDirectoryAsync(PASTA_FOTOS);
         for (const f of arquivos) {
           if (!usadas.has(PASTA_FOTOS + f)) FileSystem.deleteAsync(PASTA_FOTOS + f, { idempotent: true }).catch(() => {});
@@ -486,7 +491,7 @@ export default function App() {
     if (precisaSenha()) return;
     const p = await ImagePicker.requestCameraPermissionsAsync();
     if (!p.granted) return mostrarAviso('Sem permissão para usar a câmera.');
-    const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 });
+    const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 1 });
     if (!r.canceled) adicionarFotos(r.assets);
   };
 
@@ -495,6 +500,14 @@ export default function App() {
 
   // toque na foto: com foto abre ampliada; sem foto abre a escolha galeria/câmera
   // trocar a foto nunca lê os números de novo
+  const escolherFotoProduto = async () => {
+    const p = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!p.granted) return mostrarAviso('Preciso de acesso às fotos');
+    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 1 });
+    if (r.canceled || !r.assets || !r.assets.length) return;
+    setProdFoto(await guardarFoto(r.assets[0].uri));
+  };
+  const produtoAtual = () => (prodNome.trim() || prodFoto ? { nome: prodNome.trim(), foto: prodFoto } : null);
   const tocarFoto = (tipo, obj) => setAlvoFoto({ tipo, id: obj.id, modo: obj.foto ? 'ver' : 'escolher' });
   const objDoAlvo = alvoFoto ? (alvoFoto.tipo === 'item' ? itens : pecas).find((x) => x.id === alvoFoto.id) || null : null;
   const fotoNoVisor = alvoFoto && alvoFoto.modo === 'ver' ? objDoAlvo : null;
@@ -508,8 +521,8 @@ export default function App() {
     if (!p.granted) return mostrarAviso(fonte === 'camera' ? 'Sem permissão para usar a câmera.' : 'Sem permissão para abrir as fotos.');
     const r =
       fonte === 'camera'
-        ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 })
-        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+        ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 1 })
+        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 1 });
     if (r.canceled) return;
     mudarFotoDoVisor(await guardarFoto(r.assets[0].uri));
     if (alvoFoto && alvoFoto.modo === 'escolher') setAlvoFoto(null);
@@ -553,7 +566,7 @@ export default function App() {
     const numero = cfg.proximoNumero || orcs.reduce((m, o) => Math.max(m, o.numero || 0), 0) + 1;
     const orc = {
       id: novoId(), numero, status: 'aberto', cliente: cliente.trim(), prazo: (prazo || '').trim(),
-      validade: parseInt(cfg.validadeDias || '0', 10) || 0, data: Date.now(), itens: lista,
+      validade: parseInt(cfg.validadeDias || '0', 10) || 0, data: Date.now(), itens: lista, produto: orcDe ? orcDe.produto || null : produtoAtual(),
       taxa: orcDe ? orcDe.taxa : total.taxa, total: orcDe ? orcDe.total : total.preco,
     };
     setCfg((c) => ({ ...c, proximoNumero: numero + 1 }));
@@ -577,9 +590,11 @@ export default function App() {
     lista.map((p) => ({ id: novoId(), nome: p.nome, foto: p.foto, tD: digitosTempo(p.min, cfg.modoHora), fil: filDeSnapshot(p, cfg), ext: extDeSnapshot(p, cfg), qtd: String(p.qtd || 1), maoD: digitosDecimal(p.mao || 0), estado: 'ok', erro: '' }));
 
   // troca o que está no modal; se já tinha peças lá, pergunta antes de descartar
-  const carregarNoModal = (lista, editId, aviso) => {
+  const carregarNoModal = (lista, editId, aviso, prod) => {
     const fazer = () => {
       setItens(itensDeSnapshots(lista));
+      setProdNome((prod && prod.nome) || '');
+      setProdFoto((prod && prod.foto) || null);
       setEditandoId(editId);
       setModalCalc(true);
       if (aviso) mostrarAviso(aviso);
@@ -592,8 +607,8 @@ export default function App() {
     } else fazer();
   };
 
-  const abrirOrcamento = (o) => carregarNoModal(o.itens, null, 'Orçamento aberto no cálculo');
-  const editarCalculo = (h) => carregarNoModal(h.itens, h.id, '');
+  const abrirOrcamento = (o) => carregarNoModal(o.itens, null, 'Orçamento aberto no cálculo', o.produto);
+  const editarCalculo = (h) => carregarNoModal(h.itens, h.id, '', h.produto);
 
   // botão + : abre o cálculo em andamento (ou um vazio)
   const tocarNovo = () => setModalCalc(true);
@@ -604,14 +619,16 @@ export default function App() {
     const lista = itens.filter(pronto).map((it) => fotoDe(it));
     if (!lista.length) return mostrarAviso('Coloque pelo menos uma peça');
     const resto = lista.length - 1;
-    const nome = lista[0].nome + (resto ? ` + ${resto} ${resto === 1 ? 'peça' : 'peças'}` : '');
+    const nome = prodNome.trim() || lista[0].nome + (resto ? ` + ${resto} ${resto === 1 ? 'peça' : 'peças'}` : '');
     const velho = editandoId ? hist.find((h) => h.id === editandoId) : null;
     const calc = {
       id: velho ? velho.id : novoId(), nome, data: velho ? velho.data : Date.now(), editado: velho ? Date.now() : null,
-      itens: lista, taxa: total.taxa, total: total.preco, min: total.min, g: total.g, n: total.n,
+      itens: lista, produto: produtoAtual(), taxa: total.taxa, total: total.preco, min: total.min, g: total.g, n: total.n,
     };
     setHist((l) => (velho ? l.map((h) => (h.id === velho.id ? calc : h)) : [calc, ...l]));
     setItens([]);
+    setProdNome('');
+    setProdFoto(null);
     setEditandoId(null);
     setModalCalc(false);
     mostrarAviso(velho ? 'Cálculo atualizado' : 'Cálculo salvo no histórico');
@@ -842,6 +859,24 @@ export default function App() {
                 </View>
               </View>
 
+              {/* produto pronto: título e foto (opcional) */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                <Pressable onPress={escolherFotoProduto} style={({ pressed }) => [{ width: 64, height: 64, borderRadius: 12, backgroundColor: C.cartao2, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, pressed && { opacity: 0.75 }]}>
+                  {prodFoto ? <Image source={{ uri: prodFoto }} style={{ width: 64, height: 64 }} /> : <Ionicons name="image" size={24} color={C.suave} />}
+                </Pressable>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.campoRotulo}>Produto (título e foto, opcional)</Text>
+                  <View style={s.campoCaixa}>
+                    <TextInput value={prodNome} onChangeText={setProdNome} placeholder="Ex.: Luminária LED de Lua" placeholderTextColor={C.fraco} style={[s.campoInput, { textAlign: 'left' }]} />
+                  </View>
+                </View>
+                {prodFoto ? (
+                  <Pressable onPress={() => setProdFoto(null)} hitSlop={10}>
+                    <Ionicons name="close-circle" size={22} color={C.suave} />
+                  </Pressable>
+                ) : null}
+              </View>
+
               {/* ações */}
               <View style={s.acoes}>
                 <Acao icone="images" texto="Fotos" onPress={escolherFotos} principal />
@@ -880,6 +915,8 @@ export default function App() {
                   texto={editandoId ? 'Descartar alterações' : 'Limpar cálculo'}
                   onConfirmar={() => {
                     setItens([]);
+                    setProdNome('');
+                    setProdFoto(null);
                     setEditandoId(null);
                   }}
                   estilo={s.limpar}
@@ -1671,6 +1708,7 @@ function CalculoSalvo({ h, modo, editando, onPdf, onCopiar, onEditar, onApagar }
   return (
     <View style={[s.histCartao, editando && { borderColor: C.laranja }]}>
       <Pressable onPress={() => setAberto((a) => !a)} style={({ pressed }) => [s.histTopo, pressed && { opacity: 0.85 }]}>
+        {h.produto && h.produto.foto ? <Image source={{ uri: h.produto.foto }} style={[s.miniatura, { marginRight: 12 }]} /> : null}
         <View style={{ flex: 1 }}>
           <Text style={s.itemNome} numberOfLines={1}>{h.nome}</Text>
           <Text style={s.itemDetalhe}>
