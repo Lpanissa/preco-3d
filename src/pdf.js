@@ -28,7 +28,22 @@ const filamentoHtml = (it) => {
   return fil.map((f) => `${f.nome ? `<span class="tipo">${esc(f.nome)}</span> ` : ''}${gramasTexto(f.g)}`).join('<br/>');
 };
 
+async function fotoCapa(uri) {
+  if (!uri) return '';
+  try {
+    const r = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: 900 } }], { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true });
+    return 'data:image/jpeg;base64,' + r.base64;
+  } catch (e) {
+    return '';
+  }
+}
+
 export async function enviarOrcamentoPdf(orc, modoHora, impressora = 'Bambu Lab A1 Combo AMS') {
+  const prod = orc.produto && (orc.produto.nome || orc.produto.foto) ? orc.produto : null;
+  const capa = prod ? await fotoCapa(prod.foto) : '';
+  const capaHtml = !prod ? '' : capa
+    ? `<div class="capa"><img src="${capa}"/><div class="veu"></div><div class="tit"><div class="rot">PRODUTO</div>${prod.nome ? `<div class="nm">${esc(prod.nome)}</div>` : ''}</div></div>`
+    : `<div class="prodsem"><div class="rot">PRODUTO</div><div class="nm">${esc(prod.nome)}</div></div>`;
   const fotos = await Promise.all(orc.itens.map((it) => miniatura(it.foto)));
   const linhas = orc.itens
     .map(
@@ -68,6 +83,14 @@ export async function enviarOrcamentoPdf(orc, modoHora, impressora = 'Bambu Lab 
   h1 { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 24px; margin: 0 0 4px; color: #070b12; }
   .info { color: #5b6d85; font-size: 14px; margin-bottom: 22px; }
   .info b { color: #10202f; }
+  .capa { position: relative; height: 210px; border-radius: 14px; overflow: hidden; background: #10202f; margin-bottom: 22px; }
+  .capa img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 42%; display: block; }
+  .capa .veu { position: absolute; left: 0; right: 0; top: 0; bottom: 0; background: linear-gradient(0deg, rgba(0,0,0,0.82), rgba(0,0,0,0.1) 60%); }
+  .capa .tit { position: absolute; left: 18px; right: 18px; bottom: 14px; color: #fff; }
+  .rot { font-size: 10px; letter-spacing: 3px; font-weight: 700; opacity: 0.75; }
+  .capa .nm { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 26px; font-weight: 700; line-height: 1.1; margin-top: 4px; }
+  .prodsem { margin-bottom: 20px; color: #5b6d85; }
+  .prodsem .nm { font-family: 'Chakra Petch', Arial, sans-serif; font-size: 26px; font-weight: 700; color: #070b12; margin-top: 2px; }
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: #5b6d85; padding: 8px 6px; border-bottom: 2px solid #dfe7ef; }
   td { padding: 10px 6px; border-bottom: 1px solid #edf1f5; font-size: 14px; vertical-align: middle; }
@@ -90,8 +113,9 @@ export async function enviarOrcamentoPdf(orc, modoHora, impressora = 'Bambu Lab 
   <div class="corpo">
     <div class="cab"><h1>Orçamento</h1>${orc.numero ? `<span class="numero">#${String(orc.numero).padStart(3, '0')}</span>` : ''}</div>
     <div class="info">${orc.cliente ? `Cliente: <b>${esc(orc.cliente)}</b> &nbsp;·&nbsp; ` : ''}Data: <b>${dataTexto(orc.data)}</b>${impressora && impressora.trim() ? `<br/>Impressora: <b>${esc(impressora.trim())}</b>` : ''}</div>
+    ${capaHtml}
     <table>
-      <thead><tr><th></th><th>Peça</th><th class="num">Filamento</th><th class="num">Tempo</th><th class="num">Valor</th></tr></thead>
+      <thead><tr><th></th><th>${prod ? 'Item' : 'Peça'}</th><th class="num">Filamento</th><th class="num">Tempo</th><th class="num">Valor</th></tr></thead>
       <tbody>${linhas}${taxa}</tbody>
     </table>
     <div class="total"><span class="r">Total</span><span class="v">${reais(orc.total)}</span></div>
